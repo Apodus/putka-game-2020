@@ -1,0 +1,3 @@
+[submodule "rynx"]
+	path = rynx
+	url = https://github.com/Apodus/rynx
