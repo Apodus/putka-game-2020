@@ -35,9 +35,9 @@ class Game : RynxProject
 }
 
 [Generate]
-class Rynx : Solution
+class PutkaGame : Solution
 {
-    public Rynx()
+    public PutkaGame()
     {
         AddTargets(new Target(
             Platform.win64,
@@ -50,7 +50,6 @@ class Rynx : Solution
     {
         conf.SolutionPath = @"[solution.SharpmakeCsPath]\..";
         conf.AddProject<Game>(target);
-		
 		conf.AddProject<TestTech>(target);
 		conf.AddProject<TestScheduler>(target);
 	}
@@ -61,6 +60,6 @@ internal static class main
     [Main]
     public static void SharpmakeMain(Sharpmake.Arguments sharpmakeArgs)
     {
-        sharpmakeArgs.Generate<Rynx>();
+        sharpmakeArgs.Generate<PutkaGame>();
     }
 }
