@@ -142,6 +142,9 @@ int main(int argc, char** argv) {
 	};
 
 	rynx::sound::audio_system audio;
+	audio.set_default_attentuation_linear(0.05f);
+	audio.set_default_attentuation_quadratic(0.00001f);
+
 	sound_mapper sounds;
 
 	// set additional resources your simulation wants to use.
@@ -157,11 +160,26 @@ int main(int argc, char** argv) {
 		float max = 100;
 		float current = 100;
 	};
+
 	struct ship_engine_state {
-		rynx::ecs::id id;
+		rynx::ecs::id light_id;
+		
+		// conf
+		rynx::sound::configuration sound_conf;
+		std::string sound_event_name; // "engine" or "steering"
+		std::string activation_sound; // "engine_ignition_boom" or ""
+
+		float direction = 0;
+		float startup_time_multiplier = 0;
+		float power = 0;
+
+		std::vector<int32_t> activated_by_keys;
+
+		// runtime data
 		float activity = 0;
 		float phase = 0;
 		bool is_roaring = false;
+		bool currently_being_activated = false;
 	};
 
 	sounds.insert("engine", audio.load("../sound/bass/engine01.ogg"));
@@ -179,28 +197,10 @@ int main(int argc, char** argv) {
 	sounds.insert("engine_ignition_boom", audio.load("../sound/engine_boom.ogg"));
 
 	class player_controls : public rynx::application::logic::iruleset {
-		int32_t action_turn_left[2] = { 0 };
-		int32_t action_turn_right[2] = { 0 };
-		int32_t action_accelerate[2] = { 0 };
-		int32_t action_decelerate[2] = { 0 };
-
 		rynx::math::rand64 random;
 
-		rynx::sound::configuration engine_conf;
-		rynx::sound::configuration steering_conf;
-
 	public:
-		player_controls(rynx::mapped_input& input) {
-			action_turn_left[0] = input.generateAndBindGameKey('A', "player_turn_left");
-			action_turn_right[0] = input.generateAndBindGameKey('D', "player_turn_right");
-			action_accelerate[0] = input.generateAndBindGameKey('W', "player_accelerate");
-			action_decelerate[0] = input.generateAndBindGameKey('S', "player_decelerate");
-
-			action_turn_left[1] = input.generateAndBindGameKey('A', "player_turn_left");
-			action_turn_right[1] = input.generateAndBindGameKey('D', "player_turn_right");
-			action_accelerate[1] = input.generateAndBindGameKey('W', "player_accelerate");
-			action_decelerate[1] = input.generateAndBindGameKey('S', "player_decelerate");
-		}
+		player_controls(rynx::mapped_input& input) {}
 		
 		virtual ~player_controls() {}
 		
@@ -214,7 +214,7 @@ int main(int argc, char** argv) {
 					const player_controlled,
 					const rynx::components::position,
 					rynx::components::motion,
-					ship_engine_state,
+					std::vector<ship_engine_state>,
 					rynx::components::light_omni> ecs)
 			{
 				struct engine_fumes {
@@ -227,148 +227,107 @@ int main(int argc, char** argv) {
 				};
 				
 				std::vector<engine_fumes> fumes;
-				ecs.query().for_each([&](player_controlled player, rynx::components::motion& motion, rynx::components::position position, ship_engine_state& engine) {
-					float turn_amount = 0;
-					float accelerate_amount = 0;
-					turn_amount += 220.00f * input.isKeyDown(action_turn_left[player.controller_index]);
-					turn_amount -= 220.00f * input.isKeyDown(action_turn_right[player.controller_index]);
-					accelerate_amount += 1000.00f * input.isKeyDown(action_accelerate[player.controller_index]) * (engine.activity > 0.95f);
-					accelerate_amount -= 500.00f * input.isKeyDown(action_decelerate[player.controller_index]);
-
-					rynx::vec3f forward(std::cos(position.angle), std::sin(position.angle), 0);
-
-					motion.angularAcceleration += turn_amount;
-					motion.acceleration += forward * accelerate_amount;
-
-					engine_fumes f;
-					f.radius = { 0.5f, 1.2f };
-					f.color = { rynx::floats4(0.7f, 0.7f, 0.1f, 0.7f), rynx::floats4(1.0f, 1.0f, 0.5f, 0.9f) };
-					f.number = { 1, 5 };
-					f.lifetime = { 0.1f, 0.2f };
-
-					if (input.isKeyDown(action_turn_left[player.controller_index])) {
-						f.position = { position.value + forward * 2.8f, position.value + forward * 3.0f };
-						f.direction = { motion.velocity * dt + rynx::math::rotatedXY(forward, -rynx::math::pi * 0.5f * 0.8f), motion.velocity * dt + rynx::math::rotatedXY(forward, -rynx::math::pi * 0.5f * 1.2f) };
-						fumes.emplace_back(f);
-
-						f.position = { position.value - forward * 2.8f, position.value - forward * 3.0f };
-						f.direction = { motion.velocity * dt + rynx::math::rotatedXY(forward, +rynx::math::pi * 0.5f * 0.8f), motion.velocity * dt + rynx::math::rotatedXY(forward, +rynx::math::pi * 0.5f * 1.2f) };
-						fumes.emplace_back(f);
-
-						if (steering_conf.completion_rate() > 0.5f) {
-							steering_conf = sound.play_sound(sound_map.get("steering"), rynx::vec3f(), rynx::vec3f());
-							steering_conf.set_loudness(0.1f);
-							steering_conf.set_pitch_shift(-0.45f);
-						}
-					}
-
-					if (input.isKeyDown(action_turn_right[player.controller_index])) {
-						f.position = { position.value + forward * 2.8f, position.value + forward * 3.0f };
-						f.direction = { motion.velocity * dt + rynx::math::rotatedXY(forward, +rynx::math::pi * 0.5f * 0.8f), motion.velocity * dt + rynx::math::rotatedXY(forward, +rynx::math::pi * 0.5f * 1.2f) };
-						fumes.emplace_back(f);
-
-						f.position = { position.value - forward * 2.8f, position.value - forward * 3.0f };
-						f.direction = { motion.velocity * dt + rynx::math::rotatedXY(forward, -rynx::math::pi * 0.5f * 0.8f), motion.velocity * dt + rynx::math::rotatedXY(forward, -rynx::math::pi * 0.5f * 1.2f) };
-						fumes.emplace_back(f);
-
-						if (steering_conf.completion_rate() > 0.5f) {
-							steering_conf = sound.play_sound(sound_map.get("steering"), rynx::vec3f(), rynx::vec3f());
-							steering_conf.set_loudness(0.1f);
-							steering_conf.set_pitch_shift(-0.35f);
-						}
-					}
-
-					if (input.isKeyDown(action_decelerate[player.controller_index])) {
-						f.position = { position.value + forward * 2.8f, position.value + forward * 3.0f };
-						f.direction = { motion.velocity * dt + rynx::math::rotatedXY(forward, -0.7f), motion.velocity * dt + rynx::math::rotatedXY(forward, -0.3f) };
-						f.lifetime = { 0.4f, 0.7f };
-						fumes.emplace_back(f);
-
-						f.direction = { rynx::math::rotatedXY(forward, +0.7f), rynx::math::rotatedXY(forward, +0.3f) };
-						fumes.emplace_back(f);
-
-						if (steering_conf.completion_rate() > 0.5f) {
-							steering_conf = sound.play_sound(sound_map.get("steering"), rynx::vec3f(), rynx::vec3f());
-							steering_conf.set_loudness(0.15f);
-							steering_conf.set_pitch_shift(-0.5f);
-						}
-					}
-
-					bool engine_is_active = engine.activity > 0.95f;
-					float main_engine_max_per_sound = 0.3f;
-					float engine_sound_loudness_old = engine.activity < 1.0f ? engine.activity * engine.activity * engine.activity * engine.activity * engine.activity * main_engine_max_per_sound : main_engine_max_per_sound;
-					engine_conf.set_loudness(engine_sound_loudness_old);
-					if (engine.is_roaring) {
-						engine_conf.set_pitch_shift(0.4f * std::sin(engine.phase));
-					}
-
-					if (input.isKeyDown(action_accelerate[player.controller_index])) {
-						engine.activity += (1.0f - engine.activity) * dt * 5;
-						bool mega_boom = !engine_is_active && engine.activity > 0.95f && !engine.is_roaring;
-						if (mega_boom) {
-							engine.is_roaring = true;
-							auto conf = sound.play_sound(sound_map.get("engine_ignition_boom"), rynx::vec3f(), rynx::vec3f(), 0.5f);
-							engine.activity = 3.5f;
-							conf.set_pitch_shift(-0.25f);
+				ecs.query().for_each([&](rynx::components::motion& motion, rynx::components::position position, std::vector<ship_engine_state>& engines) {
+					for (auto&& engine : engines) {
+						int32_t engine_is_activated = 0;
+						for (auto key : engine.activated_by_keys) {
+							engine_is_activated |= input.isKeyDown(key);
 						}
 
+						float accelerate_amount = engine.power * 1000.00f * engine_is_activated * (engine.activity > 0.95f);
+
+						rynx::vec3f forward(std::cos(position.angle + engine.direction), std::sin(position.angle + engine.direction), 0);
+						motion.acceleration += forward * accelerate_amount;
+
+						engine_fumes f;
+						f.radius = { 0.5f, 1.2f };
+						f.color = { rynx::floats4(0.7f, 0.7f, 0.1f, 0.7f), rynx::floats4(1.0f, 1.0f, 0.5f, 0.9f) };
+						f.number = { 1, 5 };
+						f.lifetime = { 0.1f, 0.2f };
+
+						bool engine_is_active = engine.activity > 0.95f;
+						float main_engine_max_per_sound = 0.3f;
+						float engine_sound_loudness_old = engine.activity < 1.0f ? engine.activity * engine.activity * engine.activity * engine.activity * engine.activity * main_engine_max_per_sound : main_engine_max_per_sound;
+						engine.sound_conf.set_loudness(engine_sound_loudness_old);
 						if (engine.is_roaring) {
-							f.position = { position.value - forward * 2.0f, position.value + forward * 3.0f };
-							f.direction = { rynx::math::rotatedXY(-forward, +0.6f), rynx::math::rotatedXY(-forward, -0.6f) };
-							f.number = { 3, 7 };
-							if (mega_boom)
-								f.number = { 300 , 700 };
-
-							f.radius = { 1.0f, 2.0f };
-							f.lifetime = { 0.2f, 0.5f };
-							fumes.emplace_back(f);
+							engine.sound_conf.set_pitch_shift(0.4f * std::sin(engine.phase));
 						}
 
-						if (engine_conf.completion_rate() > 0.66f) {
+						if (engine_is_activated) {
+							engine.activity += (1.0f - engine.activity) * dt * engine.startup_time_multiplier;
+							bool mega_boom = !engine_is_active && engine.activity > 0.95f && !engine.is_roaring;
+							if (mega_boom) {
+								engine.is_roaring = true;
+
+								// "engine_ignition_boom"
+								if (!engine.activation_sound.empty()) {
+									auto conf = sound.play_sound(sound_map.get(engine.activation_sound), position.value, rynx::vec3f(), 0.5f);
+									conf.set_pitch_shift(-0.25f);
+
+									engine.activity = 3.5f;
+								}
+							}
+
 							if (engine.is_roaring) {
-								engine_conf = sound.play_sound(sound_map.get("engine"), rynx::vec3f(), rynx::vec3f());
-								engine_conf.set_loudness(engine.activity < 1.0f ? engine.activity * engine.activity * engine.activity * engine.activity * engine.activity * main_engine_max_per_sound : main_engine_max_per_sound);
-								engine_conf.set_pitch_shift(0.1f * std::sin(engine.phase));
+								f.position = { position.value - forward * 2.0f, position.value + forward * 3.0f };
+								f.direction = { rynx::math::rotatedXY(-forward, +0.6f), rynx::math::rotatedXY(-forward, -0.6f) };
+
+								int number_min = 1 + engine.power * 5;
+								int number_max = 2 + engine.power * 10;
+								f.number = { number_min, number_max };
+								if (mega_boom && !engine.activation_sound.empty())
+									f.number = { 300 , 700 };
+
+								f.radius = { 0.6f + 0.4f * engine.power, 1.3f + 0.7f * engine.power };
+								f.lifetime = { 0.2f, 0.5f };
+								fumes.emplace_back(f);
 							}
-							else {
-								engine_conf = sound.play_sound(sound_map.get("engine"), rynx::vec3f(), rynx::vec3f());
-								engine_conf.set_loudness(engine_sound_loudness_old);
-								engine_conf.set_pitch_shift(1.0f - 0.5f * std::min(engine.activity, 1.0f));
+
+							if (engine.sound_conf.completion_rate() > 0.66f) {
+								if (engine.is_roaring) {
+									engine.sound_conf = sound.play_sound(sound_map.get(engine.sound_event_name), position.value);
+									engine.sound_conf.set_loudness(engine.activity < 1.0f ? engine.activity * engine.activity * engine.activity * engine.activity * engine.activity * main_engine_max_per_sound : main_engine_max_per_sound);
+									engine.sound_conf.set_pitch_shift(0.1f * std::sin(engine.phase));
+								}
+								else {
+									engine.sound_conf = sound.play_sound(sound_map.get(engine.sound_event_name), position.value);
+									engine.sound_conf.set_loudness(engine_sound_loudness_old);
+									engine.sound_conf.set_pitch_shift(1.0f - 0.5f * std::min(engine.activity, 1.0f));
+								}
 							}
 						}
-					}
-					else {
-						engine.activity += (0.0f - engine.activity) * dt * 2;
+						else {
+							engine.activity += (0.0f - engine.activity) * dt * 2;
 
-						if (engine_conf.completion_rate() > 0.66f && engine.activity > 0.1f) {
-							if (engine.is_roaring) {
-								engine_conf = sound.play_sound(sound_map.get("engine"), rynx::vec3f(), rynx::vec3f());
-								engine_conf.set_loudness(engine_sound_loudness_old);
-								engine_conf.set_pitch_shift(0.4f * std::sin(engine.phase));
-							}
-							else {
-								engine_conf = sound.play_sound(sound_map.get("engine"), rynx::vec3f(), rynx::vec3f());
-								engine_conf.set_loudness(engine_sound_loudness_old);
-								engine_conf.set_pitch_shift(1.0f - 0.5f * std::min(engine.activity, 1.0f));
+							if (engine.sound_conf.completion_rate() > 0.66f && engine.activity > 0.1f) {
+								if (engine.is_roaring) {
+									engine.sound_conf = sound.play_sound(sound_map.get(engine.sound_event_name), position.value);
+									engine.sound_conf.set_loudness(engine_sound_loudness_old);
+									engine.sound_conf.set_pitch_shift(0.4f * std::sin(engine.phase));
+								}
+								else {
+									engine.sound_conf = sound.play_sound(sound_map.get(engine.sound_event_name), position.value);
+									engine.sound_conf.set_loudness(engine_sound_loudness_old);
+									engine.sound_conf.set_pitch_shift(1.0f - 0.5f * std::min(engine.activity, 1.0f));
+								}
 							}
 						}
-					}
 
-					engine.phase += engine.activity * 0.01f;
-					if (engine.phase > 2 * rynx::math::pi) {
-						engine.phase -= 2 * rynx::math::pi;
-					}
+						engine.phase += engine.activity * 0.01f;
+						if (engine.phase > 2 * rynx::math::pi) {
+							engine.phase -= 2 * rynx::math::pi;
+						}
 
-					auto& engine_light = ecs[engine.id].get<rynx::components::light_omni>();
-					engine_light.color.a = 20.0f * engine.activity * engine.activity;
-					engine_light.ambient = std::clamp(engine.activity * engine.activity, 0.0f, 1.0f);
-					if (engine.activity < 0.25f)
-						engine.is_roaring = false;
+						auto& engine_light = ecs[engine.light_id].get<rynx::components::light_omni>();
+						engine_light.color.a = 20.0f * engine.activity * engine.activity * engine.power;
+						engine_light.ambient = std::clamp(engine.activity * engine.activity * engine.power, 0.0f, 1.0f);
+						if (engine.activity < 0.25f)
+							engine.is_roaring = false;
+					}
 				});
 
 				if (!fumes.empty()) {
 					context.make_task("create engine fumes", [this, fumes = std::move(fumes)](rynx::ecs& ecs) {
-						std::vector<rynx::vec3f> particle_positions;
 						for (auto&& fume : fumes) {
 							int num_fumes = fume.number(random());
 							for (int i = 0; i < num_fumes; ++i) {
@@ -386,11 +345,10 @@ int main(int argc, char** argv) {
 								lifetime_modifier *= lifetime_modifier;
 
 								quadratic_favor_middle = quadratic_favor_middle * 0.5f + 0.5f;
-								rynx::vec3f fum_pos = fume.position(random());
 
 								auto particle_id = ecs.create(
 									p_info,
-									rynx::components::position(fum_pos),
+									rynx::components::position(fume.position(random())),
 									rynx::components::radius(p_info.radius.begin),
 									rynx::components::motion(fume.direction(quadratic_favor_middle) * 120 * random(0.6f, 1.8f) * lifetime_modifier, random(-1.0f, +1.0f)),
 									rynx::components::lifetime(fume.lifetime(random()) * lifetime_modifier),
@@ -398,17 +356,6 @@ int main(int argc, char** argv) {
 									rynx::components::dampening{ 2.0f, 1.0f },
 									rynx::components::translucent()
 								);
-
-								particle_positions.emplace_back(ecs[particle_id].get<rynx::components::position>().value);
-								rynx_assert((fum_pos - particle_positions.back()).length_squared() < 0.1f, "wtf");
-							}
-
-							for (size_t i = 0; i < particle_positions.size(); ++i) {
-								for (size_t k = i + 1; k < particle_positions.size(); ++k) {
-									if ((particle_positions[i] - particle_positions[k]).length_squared() > 10 * 10) {
-										rynx_assert(false, "wtf");
-									}
-								}
 							}
 						}
 					});
@@ -590,13 +537,44 @@ int main(int argc, char** argv) {
 		rotate_around(ship_id, rynx::math::pi * 0.5f); // turn rocket upright at start.
 		translate({140, 60, 0});
 
-		auto ship_main_engine = ecs.create(
-			rynx::components::position(),
-			rynx::components::position_relative{ ship_id, rynx::vec3f(-5.0f, 0, 0) },
-			rynx::components::light_omni({ rynx::floats4(1.0f, 1.0f, 1.0f, 20.0f), 0.0f })
-		);
+		
+		auto moveForwardKey = gameInput.generateAndBindGameKey('W', "MoveForward");
+		auto turnRightKey = gameInput.generateAndBindGameKey('D', "TurnRight");
+		auto turnLeftKey = gameInput.generateAndBindGameKey('A', "TurnLeft");
+		auto moveBackwardKey = gameInput.generateAndBindGameKey('S', "MoveBackward");
 
-		ecs.attachToEntity(ship_id, ship_engine_state{ ship_main_engine, 0, 0.0f, false});
+		auto attach_engine_to = [&](rynx::ecs::id dst, std::vector<int32_t> activated_by_keys, std::string activation_sound, std::string engine_operating_sound, float direction, float startupTimeMultiplier, float engine_power_multiplier) {
+			auto ship_engine = ecs.create(
+				rynx::components::position(),
+				rynx::components::position_relative{ dst, rynx::math::rotatedXY(rynx::vec3f(-5.0f, 0, 0), direction) },
+				rynx::components::light_omni({ rynx::floats4(1.0f, 1.0f, 1.0f, 0.0f), 0.0f })
+			);
+
+			ship_engine_state engine;
+			engine.activated_by_keys = activated_by_keys;
+			engine.activation_sound = activation_sound;
+			engine.direction = direction;
+			engine.light_id = ship_engine;
+			engine.power = engine_power_multiplier;
+			engine.startup_time_multiplier = startupTimeMultiplier;
+			engine.sound_event_name = engine_operating_sound;
+
+			if (!ecs[dst].has<std::vector<ship_engine_state>>()) {
+				ecs.attachToEntity(dst, std::vector<ship_engine_state>());
+				rynx_assert(ecs[dst].has<std::vector<ship_engine_state>>());
+			}
+			ecs[dst].get<std::vector<ship_engine_state>>().emplace_back(engine);
+		};
+
+		attach_engine_to(ship_id, { moveForwardKey }, "engine_ignition_boom", "engine", 0, 5.0f, 0.6f);
+		attach_engine_to(landing_fin_left, { moveForwardKey, turnRightKey }, "", "engine", 0, 15.0f, 0.1f);
+		attach_engine_to(landing_fin_left, { moveBackwardKey, turnLeftKey}, "", "steering", rynx::math::pi, 15.0f, 0.25f);
+
+		attach_engine_to(landing_fin_right, { moveForwardKey, turnLeftKey }, "", "engine", 0, 15.0f, 0.1f);
+		attach_engine_to(landing_fin_right, { moveBackwardKey, turnRightKey}, "", "steering", rynx::math::pi, 15.0f, 0.25f);
+		
+		attach_engine_to(top_part2, { turnLeftKey }, "", "steering", +rynx::math::pi * 0.5f, 15.0f, 0.1f);
+		attach_engine_to(top_part2, { turnRightKey }, "", "steering", -rynx::math::pi * 0.5f, 15.0f, 0.1f);
 
 		auto makeBox_inside = [&](rynx::vec3<float> pos, float angle, float edgeLength, float angular_velocity) {
 			auto mesh_name = std::to_string(pos.y * pos.x - pos.y - pos.x);
@@ -1008,9 +986,6 @@ int main(int argc, char** argv) {
 
 			base_simulation.m_logic.entities_erased(*base_simulation.m_context, ids_dead);
 			ecs.erase(ids_dead);
-			if (!ids_dead.empty()) {
-				logmsg("erased entities: %d", ids_dead.size());
-			}
 		}
 
 		{
