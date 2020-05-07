@@ -63,6 +63,8 @@ namespace rynx {
 	}
 }
 
+float g_success_timer = 0;
+
 int main(int argc, char** argv) {
 
 	// uses this thread services of rynx, for example in cpu performance profiling.
@@ -195,6 +197,55 @@ int main(int argc, char** argv) {
 	sounds.insert("steering", audio.load("../sound/ship/gas_leak05.ogg"));
 
 	sounds.insert("engine_ignition_boom", audio.load("../sound/engine_boom.ogg"));
+	sounds.insert("rocket_death", audio.load("../sound/death01.ogg"));
+	sounds.insert("rocket_death", audio.load("../sound/death02.ogg"));
+	sounds.insert("rocket_death", audio.load("../sound/death03.ogg"));
+	sounds.insert("rocket_death", audio.load("../sound/death04.ogg"));
+
+	class rocket_component_destruction : public rynx::application::logic::iruleset {
+		virtual void onFrameProcess(rynx::scheduler::context& context, float dt) override {
+			context.add_task("check rocket damage", [dt](rynx::scheduler::task& task_context, rynx::ecs::view<health, const rynx::components::motion> ecs) {
+				static float max_v = -10000000.0f;
+				
+				float steadiness = 0;
+				ecs.query().for_each([&steadiness, dt](rynx::ecs::id id, health& hp, rynx::components::motion m) {
+					float v = m.acceleration.length_squared();
+					v -= 414033.0f;
+					v *= dt;
+
+					steadiness += m.velocity.length_squared();
+
+					if (v > max_v) {
+						/*
+							max_v: 413128.281250    (400)
+							max_v: 2646110976.000000 (2646110)
+						*/
+
+						/*
+							max_v: 414033.718750    (6600)
+							max_v: 3947918.500000   (63000)
+							max_v: 34730092.000000  (630000)
+						*/
+						
+						max_v = v;
+						logmsg("max_v: %f", max_v);
+					}
+
+					if (v > 279298.0f) {
+						float damage = v / 279298.0f;
+						hp.current -= damage * 10.0f;
+					}
+				});
+
+				if (steadiness < 2.0f) {
+					g_success_timer += dt;
+				}
+				else {
+					g_success_timer = 0;
+				}
+			});
+		}
+	};
 
 	class player_controls : public rynx::application::logic::iruleset {
 		rynx::math::rand64 random;
@@ -376,13 +427,16 @@ int main(int argc, char** argv) {
 		auto ruleset_motion_updates = std::make_unique<rynx::ruleset::motion_updates>(rynx::vec3<float>(0, -60.8f, 0));
 		auto ruleset_physical_springs = std::make_unique<rynx::ruleset::physics::springs>();
 		auto ruleset_player_controls = std::make_unique<player_controls>(gameInput);
+		auto ruleset_rocket_destruction = std::make_unique<rocket_component_destruction>();
 
+		ruleset_rocket_destruction->required_for(*ruleset_motion_updates);
 		ruleset_physical_springs->depends_on(*ruleset_motion_updates);
 		ruleset_collisionDetection->depends_on(*ruleset_motion_updates);
 		ruleset_frustum_culling->depends_on(*ruleset_motion_updates);
 		ruleset_player_controls->depends_on(*ruleset_motion_updates);
 		ruleset_player_controls->required_for(*ruleset_collisionDetection);
-
+		
+		base_simulation.add_rule_set(std::move(ruleset_rocket_destruction));
 		base_simulation.add_rule_set(std::move(ruleset_motion_updates));
 		base_simulation.add_rule_set(std::move(ruleset_physical_springs));
 
@@ -401,11 +455,10 @@ int main(int argc, char** argv) {
 		std::vector<rynx::ecs::entity_id_t> ship_entities;
 		auto ship_id = ecs.create();
 		ecs.attachToEntity(ship_id,
-			player_controlled(),
 			health(),
 			rynx::components::position(),
 			rynx::components::motion(),
-			rynx::components::physical_body(100, 100 * 5, 0.3f, 1.0f, ship_id),
+			rynx::components::physical_body(100, 100 * 5, 0.3f, 1.0f, 0),
 			rynx::components::radius(3.0f),
 			rynx::components::collisions{ collisionCategoryDynamic.value },
 			rynx::components::color(),
@@ -419,7 +472,7 @@ int main(int argc, char** argv) {
 			health(),
 			rynx::components::position({10, 0, 0}),
 			rynx::components::motion(),
-			rynx::components::physical_body(100, 100 * 5, 0.3f, 1.0f, ship_id),
+			rynx::components::physical_body(100, 100 * 5, 0.3f, 1.0f, 0),
 			rynx::components::radius(3.0f),
 			rynx::components::collisions{ collisionCategoryDynamic.value },
 			rynx::components::color(),
@@ -433,7 +486,7 @@ int main(int argc, char** argv) {
 			health(),
 			rynx::components::position({ 20, 0, 0 }),
 			rynx::components::motion(),
-			rynx::components::physical_body(100, 100 * 5, 0.3f, 1.0f, ship_id),
+			rynx::components::physical_body(100, 100 * 5, 0.3f, 1.0f, 0),
 			rynx::components::radius(3.0f),
 			rynx::components::collisions{ collisionCategoryDynamic.value },
 			rynx::components::color(),
@@ -447,7 +500,7 @@ int main(int argc, char** argv) {
 			health(),
 			rynx::components::position({ -7, +7, 0 }),
 			rynx::components::motion(),
-			rynx::components::physical_body(100, 100 * 5, 0.3f, 1.0f, ship_id),
+			rynx::components::physical_body(100, 100 * 5, 0.3f, 1.0f, 0),
 			rynx::components::radius(3.0f),
 			rynx::components::collisions{ collisionCategoryDynamic.value },
 			rynx::components::color(),
@@ -620,7 +673,7 @@ int main(int argc, char** argv) {
 		*/
 
 		// makeBox_inside({ -5, -30, 0 }, +0.3f, 40.f, -0.025f);
-		makeBox_outside({ -15, -50, 0 }, -0.3f, 265.f, +0.58f);
+		makeBox_outside({ -15, -50, 0 }, -0.3f, 65.f, +0.58f);
 
 		// makeBox_inside({ -65, -100, 0 }, 0.f, 60.f, -0.030f);
 		makeBox_outside({ -65, -100, 0 }, -0.3f, 65.f, -0.24f);
@@ -884,6 +937,18 @@ int main(int argc, char** argv) {
 					application.textRenderer().drawText(std::string("entities: ") + std::to_string(num_entities), -0.9f, 0.15f + info_text_pos_y, 0.05f, Color::DARK_GREEN, rynx::TextRenderer::Align::Left, fontConsola);
 					application.textRenderer().drawText(std::string("frustum culled: ") + std::to_string(ecs.query().in<rynx::components::frustum_culled>().count()), -0.9f, 0.10f + info_text_pos_y, 0.05f, Color::DARK_GREEN, rynx::TextRenderer::Align::Left, fontConsola);
 					application.textRenderer().drawText(std::string("visible: ") + std::to_string(ecs.query().notIn<rynx::components::frustum_culled>().count()), -0.9f, 0.05f + info_text_pos_y, 0.05f, Color::DARK_GREEN, rynx::TextRenderer::Align::Left, fontConsola);
+
+					static rynx::floats4 success_color(0, 0, 0, 0);
+					int32_t rocket_parts_alive = ecs.query().in<health>().count();
+					int32_t success_rate = rocket_parts_alive * 100 / 5;
+
+					if (g_success_timer > 2.0f) {
+						success_color += (rynx::floats4(1.0f - success_rate * 0.01f, success_rate * 0.01f, 0.0f, 1.0f) - success_color) * dt;
+					}
+					else {
+						success_color += (rynx::floats4(0,0,0,0) - success_color) * dt;
+					}
+					application.textRenderer().drawText(std::to_string(success_rate) + std::string("% success"), 0.0f, 0.0f, 0.15f, success_color, rynx::TextRenderer::Align::Center, fontConsola);
 				}
 
 				scheduler.wait_until_complete();
@@ -954,6 +1019,9 @@ int main(int argc, char** argv) {
 			}
 
 			ecs.query().for_each([&ecs](rynx::components::position& pos, rynx::components::position_relative relative_pos) {
+				if (!ecs.exists(relative_pos.host))
+					return;
+
 				const auto& host_pos = ecs[relative_pos.host].get<rynx::components::position>();
 				pos.value = host_pos.value + rynx::math::rotatedXY(relative_pos.relative_pos, host_pos.angle);
 			});
@@ -963,16 +1031,131 @@ int main(int argc, char** argv) {
 			rynx_profile("Main", "Clean up dead entitites");
 			dt = std::min(0.016f, std::max(0.001f, frame_timer_dt.time_since_last_access_ms() * 0.001f));
 
+			// mark time constrained entities for removal.
 			{
-				std::vector<rynx::ecs::id> ids;
-				ecs.query().for_each([&ids, dt](rynx::ecs::id id, rynx::components::lifetime& time) {
+				std::vector<rynx::ecs::id> ids = ecs.query().ids_if([dt](rynx::components::lifetime& time) {
 					time.value -= dt;
-					if (time.value <= 0) {
-						ids.emplace_back(id);
-					}
+					return time.value <= 0.0f;
 				});
+				
 				for (auto&& id : ids)
 					ecs.attachToEntity(id, rynx::components::dead());
+			}
+
+			// rocket part hp things. remove engines & health components when hp reaches zero.
+			{
+				std::vector<rynx::ecs::id> ids = ecs.query().ids_if([](health hp) {
+					return hp.current <= 0.0f;
+				});
+
+				for (auto&& id : ids) {
+					if (ecs[id].has<std::vector<ship_engine_state>>())
+						ecs.removeFromEntity<std::vector<ship_engine_state>, health>(id);
+					else
+						ecs.removeFromEntity<health>(id);
+
+					// explosion particles
+					{
+						rynx::components::position pos = ecs[id].get<rynx::components::position>();
+
+						// also play some explosy sound or something. why not.
+						audio.play_sound(sounds.get("rocket_death"), pos.value);
+
+						range<rynx::floats4> start_color{ rynx::floats4{0.5f, 0.5f, 0.5f, 1.0f}, rynx::floats4{0.3f, 0.3f, 0.3f, 1.0f} };
+						range<rynx::floats4> end_color{ rynx::floats4{0.7f, 0.0f, 0.0f, 0.0f}, rynx::floats4{0.3f, 0.6f, 0.1f, 0.0f} };
+						range<float> start_radius{ 2.0f, 3.5f };
+						range<float> end_radius{ 0.0f, 0.1f };
+
+						for (int i = 0; i < 1000; ++i) {
+							rynx::components::particle_info p_info;
+							p_info.color.begin = start_color(random());
+							p_info.color.end = end_color(random());
+							p_info.radius.begin = start_radius(random());
+							p_info.radius.end = end_radius(random());
+
+							rynx::vec3f velocity{ random(0.0f, 300.0f), 0, 0 };
+							rynx::math::rotateXY(velocity, random(rynx::math::pi * 2.0f));
+
+							auto particle_id = ecs.create(
+								p_info,
+								pos,
+								rynx::components::radius(p_info.radius.begin),
+								rynx::components::motion(velocity, random(-1.0f, +1.0f)),
+								rynx::components::lifetime(random(1.0f, 2.0f)),
+								rynx::components::color(p_info.color.begin),
+								rynx::components::dampening{ 0.1f, 1.0f },
+								rynx::components::translucent()
+							);
+						}
+
+						// lights up for explosion.
+						rynx::components::light_omni explosion_light;
+						explosion_light.ambient = 0.1f;
+						explosion_light.color = { 1.0f, 1.0f, 1.0f, 20.f };
+						explosion_light.attenuation_linear = 1.0f;
+						explosion_light.attenuation_quadratic = 0.05f;
+						ecs.create(
+							rynx::components::lifetime(random(1.0f, 2.0f)),
+							explosion_light,
+							pos,
+							rynx::components::radius(20.0f)
+						);
+					}
+				}
+
+				// also we need to detach joints connecting to the dead rocket parts.
+				// and create new physics parts for the joints to connect to.
+
+				auto contains = [](const auto& vec, rynx::ecs::id id) { bool answer = false; for (auto&& bleb : vec) { answer |= (bleb == id); } return answer; };
+				auto joints_a = ecs.query().ids_if([&contains, &ids](const rynx::components::phys::joint& j) { return contains(ids, j.id_a); });
+				auto joints_b = ecs.query().ids_if([&contains, &ids](const rynx::components::phys::joint& j) { return contains(ids, j.id_b); });
+
+				for (auto id : joints_a) {
+					auto target_id = ecs[id].get<rynx::components::phys::joint>().id_a;
+					rynx::components::position pos = ecs[target_id].get<const rynx::components::position>();
+					rynx::components::motion m = ecs[target_id].get<const rynx::components::motion>();
+					rynx::components::collisions col = ecs[target_id].get<const rynx::components::collisions>();
+					auto dummy_id = ecs.create(
+						pos,
+						m,
+						col,
+						rynx::components::radius(1.0f),
+						rynx::components::physical_body(10.0f, 10.0f, 0.0f, 1.0f, 0),
+						rynx::components::color{ {1, 1, 1, 0} },
+						rynx::components::dampening{ 0.5f, 0.5f },
+						rynx::components::translucent()
+					);
+
+					ecs[id].get<rynx::components::phys::joint>().id_a = dummy_id;
+					ecs[id].get<rynx::components::phys::joint>().point_a = { 0, 0, 0 };
+				}
+
+				for (auto id : joints_b) {
+					auto target_id = ecs[id].get<rynx::components::phys::joint>().id_b;
+					rynx::components::position pos = ecs[target_id].get<const rynx::components::position>();
+					rynx::components::motion m = ecs[target_id].get<const rynx::components::motion>();
+					rynx::components::collisions col = ecs[target_id].get<const rynx::components::collisions>();
+					auto dummy_id = ecs.create(
+						pos,
+						m,
+						col,
+						rynx::components::radius(1.0f),
+						rynx::components::physical_body(10.0f, 10.0f, 0.0f, 1.0f, 0),
+						rynx::components::color{ {1, 1, 1, 0} },
+						rynx::components::dampening{ 0.5f, 0.5f },
+						rynx::components::translucent()
+					);
+
+					ecs[id].get<rynx::components::phys::joint>().id_b = dummy_id;
+					ecs[id].get<rynx::components::phys::joint>().point_b = { 0, 0, 0 };
+				}
+			}
+
+			// update explosion lights intensity
+			{
+				ecs.query().for_each([](rynx::components::lifetime lt, rynx::components::light_omni& light) {
+					light.color.a = 20.0f * lt;
+				});
 			}
 
 			auto ids_dead = ecs.query().in<rynx::components::dead>().ids();
