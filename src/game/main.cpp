@@ -938,9 +938,18 @@ int main(int argc, char** argv) {
 					application.textRenderer().drawText(std::string("frustum culled: ") + std::to_string(ecs.query().in<rynx::components::frustum_culled>().count()), -0.9f, 0.10f + info_text_pos_y, 0.05f, Color::DARK_GREEN, rynx::TextRenderer::Align::Left, fontConsola);
 					application.textRenderer().drawText(std::string("visible: ") + std::to_string(ecs.query().notIn<rynx::components::frustum_culled>().count()), -0.9f, 0.05f + info_text_pos_y, 0.05f, Color::DARK_GREEN, rynx::TextRenderer::Align::Left, fontConsola);
 
+					auto player_positions = ecs.query().in<health>().gather<rynx::components::position>();
+					rynx::vec3f player_position = std::reduce(player_positions.begin(), player_positions.end(), rynx::vec3f(), [](const auto& a, const auto& b) { return a + std::get<0>(b).value; });
+
 					static rynx::floats4 success_color(0, 0, 0, 0);
 					int32_t rocket_parts_alive = ecs.query().in<health>().count();
 					int32_t success_rate = rocket_parts_alive * 100 / 5;
+
+					if (rocket_parts_alive > 0) {
+						player_position *= 1.0f / rocket_parts_alive;
+						player_position.z = camera->position().z;
+						cameraPosition = player_position;
+					}
 
 					if (g_success_timer > 2.0f) {
 						success_color += (rynx::floats4(1.0f - success_rate * 0.01f, success_rate * 0.01f, 0.0f, 1.0f) - success_color) * dt;
