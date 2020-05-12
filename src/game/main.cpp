@@ -811,7 +811,7 @@ int main(int argc, char** argv) {
 
 			if (!ecs[dst].has<std::vector<ship_engine_state>>()) {
 				ecs.attachToEntity(dst, std::vector<ship_engine_state>());
-				rynx_assert(ecs[dst].has<std::vector<ship_engine_state>>());
+				rynx_assert(ecs[dst].has<std::vector<ship_engine_state>>(), "just added the component. must be there.");
 			}
 			ecs[dst].get<std::vector<ship_engine_state>>().emplace_back(engine);
 		};
@@ -1186,8 +1186,10 @@ int main(int argc, char** argv) {
 					}
 
 					auto player_positions = ecs.query().in<health>().gather<rynx::components::position, rynx::components::motion>();
-					rynx::vec3f player_position = std::reduce(player_positions.begin(), player_positions.end(), rynx::vec3f(), [](const auto& a, const auto& b) { return a + std::get<0>(b).value; });
-					rynx::vec3f player_velocity = std::reduce(player_positions.begin(), player_positions.end(), rynx::vec3f(), [](const auto& a, const auto& b) { return a + std::get<1>(b).velocity; });
+					
+					rynx::vec3f player_position;
+					rynx::vec3f player_velocity;
+					for(auto&& data_line : player_positions) { player_position += std::get<0>(data_line).value; player_velocity += std::get<1>(data_line).velocity; }
 
 					static rynx::floats4 success_color(0, 0, 0, 0);
 					static std::string game_result_text;
