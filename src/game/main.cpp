@@ -82,18 +82,6 @@ int main(int argc, char** argv) {
 	{
 		meshes->create("ball", rynx::Shape::makeCircle(1.0f, 32), "Hero");
 		meshes->create("circle_empty", rynx::Shape::makeCircle(1.0f, 32), "Empty");
-		meshes->create("square_empty", rynx::Shape::makeBox(1.0f), "Empty");
-		meshes->create("particle_smoke", rynx::Shape::makeBox(1.0f), "Smoke");
-		meshes->create("square_rope", rynx::Shape::makeBox(1.0f), "Rope");
-
-		auto* tube_mesh = meshes->create("square_tube_normals", rynx::Shape::makeBox(1.0f), "Empty");
-		tube_mesh->normals.clear();
-		tube_mesh->putNormal(0, +1, 0);
-		tube_mesh->putNormal(0, -1, 0);
-		tube_mesh->putNormal(0, -1, 0);
-		tube_mesh->putNormal(0, +1, 0);
-		tube_mesh->bind();
-		tube_mesh->rebuildNormalBuffer();
 	}
 
 	rynx::scheduler::task_scheduler scheduler;
@@ -128,7 +116,7 @@ int main(int argc, char** argv) {
 			m_data[name].emplace_back(value);
 		}
 
-		int get(const std::string& name) {
+		int get(const std::string& name) const {
 			auto it = m_data.find(name);
 			if (it != m_data.end()) {
 				if (!it->second.empty()) {
@@ -139,13 +127,15 @@ int main(int argc, char** argv) {
 		}
 
 	private:
-		rynx::math::rand64 m_random;
+		mutable rynx::math::rand64 m_random;
 		rynx::unordered_map<std::string, std::vector<int>> m_data;
 	};
 
 	rynx::sound::audio_system audio;
-	audio.set_default_attentuation_linear(0.05f);
-	audio.set_default_attentuation_quadratic(0.00001f);
+	audio.set_default_attentuation_linear(0.01f);
+	audio.set_default_attentuation_quadratic(0.000001f);
+	audio.set_volume(1.0f);
+	audio.adjust_volume(1.5f);
 
 	sound_mapper sounds;
 
@@ -203,46 +193,247 @@ int main(int argc, char** argv) {
 	sounds.insert("rocket_death", audio.load("../sound/death04.ogg"));
 
 	class rocket_component_destruction : public rynx::application::logic::iruleset {
+		rynx::math::rand64 random;
+
+		struct burning {};
+		struct fire_lift {
+			float v = 0.0f;
+		};
+
 		virtual void onFrameProcess(rynx::scheduler::context& context, float dt) override {
-			context.add_task("check rocket damage", [dt](rynx::scheduler::task& task_context, rynx::ecs::view<health, const rynx::components::motion> ecs) {
+			context.add_task("check rocket damage", [dt](rynx::ecs::view<health, const rynx::components::motion, const rynx::components::collision_custom_reaction> ecs) {
 				static float max_v = -10000000.0f;
 				
 				float steadiness = 0;
-				ecs.query().for_each([&steadiness, dt](rynx::ecs::id id, health& hp, rynx::components::motion m) {
-					float v = m.acceleration.length_squared();
-					v -= 414033.0f;
-					v *= dt;
-
+				ecs.query().for_each([&steadiness, dt](health& hp, const rynx::components::collision_custom_reaction& custom, rynx::components::motion m) {
 					steadiness += m.velocity.length_squared();
-
-					if (v > max_v) {
-						/*
-							max_v: 413128.281250    (400)
-							max_v: 2646110976.000000 (2646110)
-						*/
-
-						/*
-							max_v: 414033.718750    (6600)
-							max_v: 3947918.500000   (63000)
-							max_v: 34730092.000000  (630000)
-						*/
-						
-						max_v = v;
-						logmsg("max_v: %f", max_v);
-					}
-
-					if (v > 279298.0f) {
-						float damage = v / 279298.0f;
-						hp.current -= damage * 10.0f;
+					for (const auto& event : custom.events) {
+						float damage = event.relative_velocity.dot(event.normal) - 4.0f;
+						if (damage > 0) {
+							hp.current -= damage * damage * 10.0f;
+						}
 					}
 				});
 
-				if (steadiness < 2.0f) {
+				if (steadiness < 25.0f || g_success_timer >= 2.0f) {
 					g_success_timer += dt;
 				}
 				else {
 					g_success_timer = 0;
 				}
+			});
+
+			context.add_task("rocket react to destroyed parts", [this](rynx::ecs& ecs, rynx::sound::audio_system& audio, const sound_mapper& sounds) {
+				std::vector<rynx::ecs::id> ids = ecs.query().ids_if([](health hp) {
+					return hp.current <= 0.0f;
+				});
+
+				for (auto&& id : ids) {
+					if (ecs[id].has<std::vector<ship_engine_state>>()) {
+						auto engines = ecs[id].get<std::vector<ship_engine_state>>();
+						for (auto& engine : engines) {
+							ecs[engine.light_id].remove<rynx::components::light_omni>();
+						}
+
+						ecs.removeFromEntity<std::vector<ship_engine_state>, health, rynx::components::collision_custom_reaction>(id);
+					}
+					else
+						ecs.removeFromEntity<health, rynx::components::collision_custom_reaction>(id);
+
+
+					rynx::components::light_omni fire_light;
+					fire_light.attenuation_quadratic = 1.0f;
+					fire_light.attenuation_linear = 0.0f;
+					fire_light.color = { 1, 1, 1, 10.01f };
+					fire_light.ambient = 0.05f;
+					
+					ecs.attachToEntity(id, burning(), fire_light);
+
+
+					// explosion particles
+					{
+						rynx::components::position pos = ecs[id].get<rynx::components::position>();
+
+						// also play some explosy sound or something. why not.
+						audio.play_sound(sounds.get("rocket_death"), pos.value);
+
+						range<rynx::floats4> start_color{ rynx::floats4{0.5f, 0.3f, 0.0f, 0.3f}, rynx::floats4{0.6f, 0.4f, 0.0f, 0.3f} };
+						range<rynx::floats4> end_color{ rynx::floats4{1.0f, 0.3f, 0.0f, 0.0f}, rynx::floats4{1.0f, 0.6f, 0.1f, 0.0f} };
+						range<float> start_radius{ 2.0f, 3.5f };
+						range<float> end_radius{ 0.0f, 0.1f };
+
+						for (int i = 0; i < 1000; ++i) {
+							rynx::components::particle_info p_info;
+							p_info.color.begin = start_color(random());
+							p_info.color.end = end_color(random());
+							p_info.radius.begin = start_radius(random());
+							p_info.radius.end = end_radius(random());
+
+							rynx::vec3f velocity{ random(0.0f, 200.0f), 0, 0 };
+							rynx::math::rotateXY(velocity, random(rynx::math::pi * 2.0f));
+
+							ecs.create(
+								p_info,
+								pos,
+								rynx::components::radius(p_info.radius.begin),
+								rynx::components::motion(velocity, random(-1.0f, +1.0f)),
+								rynx::components::lifetime(random(1.0f, 2.0f)),
+								rynx::components::color(p_info.color.begin),
+								rynx::components::dampening{ 0.9f, 1.0f },
+								rynx::components::translucent()
+							);
+						}
+
+						// lights up for explosion.
+						rynx::components::light_omni explosion_light;
+						explosion_light.ambient = 0.1f;
+						explosion_light.color = { 1.0f, 1.0f, 1.0f, 20.f };
+						explosion_light.attenuation_linear = 1.0f;
+						explosion_light.attenuation_quadratic = 0.05f;
+						ecs.create(
+							rynx::components::lifetime(random(1.0f, 2.0f)),
+							explosion_light,
+							pos,
+							rynx::components::radius(20.0f)
+						);
+					}
+				}
+
+				auto positions = ecs.query().in<burning>().notIn<health>().gather<rynx::components::position>();
+				for (const auto& pos_tuple : positions) {
+					const auto& pos = std::get<0>(pos_tuple);
+					for (int i = 0; i < 2; ++i) {
+						range<rynx::floats4> start_color{ rynx::floats4{0.5f, 0.3f, 0.0f, 0.3f}, rynx::floats4{0.6f, 0.4f, 0.0f, 0.3f} };
+						range<rynx::floats4> end_color{ rynx::floats4{1.0f, 0.3f, 0.0f, 0.0f}, rynx::floats4{1.0f, 0.6f, 0.1f, 0.0f} };
+						range<float> start_radius{ 2.0f, 3.5f };
+						range<float> end_radius{ 0.0f, 0.1f };
+
+						rynx::components::particle_info p_info;
+						p_info.color.begin = start_color(random());
+						p_info.color.end = end_color(random());
+						p_info.radius.begin = start_radius(random());
+						p_info.radius.end = end_radius(random());
+
+						rynx::vec3f velocity{ random(10.0f, 30.0f), 0, 0 };
+
+						float rot_v = rynx::math::pi * 0.2f;
+						rynx::math::rotateXY(velocity, rynx::math::pi * 0.50f + random(-rot_v, +rot_v));
+
+						float upness = (velocity.dot({ 0,1,0 }) / velocity.length());
+						upness = upness * upness * upness * upness;
+
+						ecs.create(
+							p_info,
+							pos,
+							rynx::components::radius(p_info.radius.begin),
+							rynx::components::motion(velocity, random(-1.0f, +1.0f)),
+							rynx::components::lifetime(random(0.6f, 1.2f)),
+							rynx::components::color(p_info.color.begin),
+							rynx::components::dampening{ 0.6f, 1.0f },
+							rynx::components::translucent(),
+							rynx::components::ignore_gravity(),
+							fire_lift{ 100.0f * upness }
+						);
+					}
+				}
+
+				auto entity_data = ecs.query().gather<rynx::components::position, health>();
+
+				for (const auto& data_line : entity_data) {
+					auto pos = std::get<0>(data_line);
+					auto hp = std::get<1>(data_line);
+
+					int num_fire_particles = static_cast<int>(5.0f * random() * (1.0f - hp.current / hp.max));
+					for (int i = 0; i < num_fire_particles; ++i) {
+						range<rynx::floats4> start_color{ rynx::floats4{0.5f, 0.3f, 0.0f, 0.3f}, rynx::floats4{0.6f, 0.4f, 0.0f, 0.3f} };
+						range<rynx::floats4> end_color{ rynx::floats4{1.0f, 0.3f, 0.0f, 0.0f}, rynx::floats4{1.0f, 0.6f, 0.1f, 0.0f} };
+						range<float> start_radius{ 2.0f, 3.5f };
+						range<float> end_radius{ 0.0f, 0.1f };
+
+						rynx::components::particle_info p_info;
+						p_info.color.begin = start_color(random());
+						p_info.color.end = end_color(random());
+						p_info.radius.begin = start_radius(random());
+						p_info.radius.end = end_radius(random());
+
+						rynx::vec3f velocity{ random(10.0f, 30.0f), 0, 0 };
+						float rot_v = rynx::math::pi * 0.5f;
+						rynx::math::rotateXY(velocity, rynx::math::pi * 0.20f + random(-rot_v, +rot_v));
+
+						float upness = (velocity.dot({ 0,1,0 }) / velocity.length());
+						upness = upness * upness * upness * upness;
+
+						ecs.create(
+							p_info,
+							pos,
+							rynx::components::radius(p_info.radius.begin),
+							rynx::components::motion(velocity, random(-1.0f, +1.0f)),
+							rynx::components::lifetime(random(0.6f, 1.2f)),
+							rynx::components::color(p_info.color.begin),
+							rynx::components::dampening{ 0.6f, 1.0f },
+							rynx::components::translucent(),
+							rynx::components::ignore_gravity(),
+							fire_lift{100.0f * upness}
+						);
+					}
+				}
+
+				ecs.query().for_each([](rynx::components::motion& m, fire_lift lift) { m.acceleration += {0, lift.v, 0}; });
+
+				// also we need to detach joints connecting to the dead rocket parts.
+				// and create new physics parts for the joints to connect to.
+
+				auto contains = [](const auto& vec, rynx::ecs::id id) { bool answer = false; for (auto&& bleb : vec) { answer |= (bleb == id); } return answer; };
+				auto joints_a = ecs.query().ids_if([&contains, &ids](const rynx::components::phys::joint& j) { return contains(ids, j.id_a); });
+				auto joints_b = ecs.query().ids_if([&contains, &ids](const rynx::components::phys::joint& j) { return contains(ids, j.id_b); });
+
+				for (auto id : joints_a) {
+					auto target_id = ecs[id].get<rynx::components::phys::joint>().id_a;
+					rynx::components::position pos = ecs[target_id].get<const rynx::components::position>();
+					rynx::components::motion m = ecs[target_id].get<const rynx::components::motion>();
+					rynx::components::collisions col = ecs[target_id].get<const rynx::components::collisions>();
+					auto dummy_id = ecs.create(
+						pos,
+						m,
+						col,
+						rynx::components::radius(1.0f),
+						rynx::components::physical_body(10.0f, 10.0f, 0.0f, 1.0f, 0),
+						rynx::components::color{ {1, 1, 1, 0} },
+						rynx::components::dampening{ 0.5f, 0.5f },
+						rynx::components::translucent()
+					);
+
+					ecs[id].get<rynx::components::phys::joint>().id_a = dummy_id;
+					ecs[id].get<rynx::components::phys::joint>().point_a = { 0, 0, 0 };
+				}
+
+				for (auto id : joints_b) {
+					auto target_id = ecs[id].get<rynx::components::phys::joint>().id_b;
+					rynx::components::position pos = ecs[target_id].get<const rynx::components::position>();
+					rynx::components::motion m = ecs[target_id].get<const rynx::components::motion>();
+					rynx::components::collisions col = ecs[target_id].get<const rynx::components::collisions>();
+					auto dummy_id = ecs.create(
+						pos,
+						m,
+						col,
+						rynx::components::radius(1.0f),
+						rynx::components::physical_body(10.0f, 10.0f, 0.0f, 1.0f, 0),
+						rynx::components::color{ {1, 1, 1, 0} },
+						rynx::components::dampening{ 0.5f, 0.5f },
+						rynx::components::translucent()
+					);
+
+					ecs[id].get<rynx::components::phys::joint>().id_b = dummy_id;
+					ecs[id].get<rynx::components::phys::joint>().point_b = { 0, 0, 0 };
+				}
+
+				// update explosion lights intensity
+				{
+					ecs.query().notIn<burning>().for_each([](rynx::components::lifetime lt, rynx::components::light_omni& light) {
+						light.color.a = 20.0f * lt;
+					});
+				}
+
 			});
 		}
 	};
@@ -251,7 +442,7 @@ int main(int argc, char** argv) {
 		rynx::math::rand64 random;
 
 	public:
-		player_controls(rynx::mapped_input& input) {}
+		player_controls() {}
 		
 		virtual ~player_controls() {}
 		
@@ -301,7 +492,7 @@ int main(int argc, char** argv) {
 						float engine_sound_loudness_old = engine.activity < 1.0f ? engine.activity * engine.activity * engine.activity * engine.activity * engine.activity * main_engine_max_per_sound : main_engine_max_per_sound;
 						engine.sound_conf.set_loudness(engine_sound_loudness_old);
 						if (engine.is_roaring) {
-							engine.sound_conf.set_pitch_shift(0.4f * std::sin(engine.phase));
+							engine.sound_conf.set_pitch_shift(0.6f * std::sin(engine.phase));
 						}
 
 						if (engine_is_activated) {
@@ -309,25 +500,24 @@ int main(int argc, char** argv) {
 							bool mega_boom = !engine_is_active && engine.activity > 0.95f && !engine.is_roaring;
 							if (mega_boom) {
 								engine.is_roaring = true;
-
-								// "engine_ignition_boom"
 								if (!engine.activation_sound.empty()) {
 									auto conf = sound.play_sound(sound_map.get(engine.activation_sound), position.value, rynx::vec3f(), 0.5f);
 									conf.set_pitch_shift(-0.25f);
-
 									engine.activity = 3.5f;
 								}
 							}
 
 							if (engine.is_roaring) {
-								f.position = { position.value - forward * 2.0f, position.value + forward * 3.0f };
+								f.position = { position.value - forward * 2.0f, position.value - forward * 3.0f };
 								f.direction = { rynx::math::rotatedXY(-forward, +0.6f), rynx::math::rotatedXY(-forward, -0.6f) };
 
-								int number_min = 1 + engine.power * 5;
-								int number_max = 2 + engine.power * 10;
+								int number_min = static_cast<int>(1 + engine.power * 5);
+								int number_max = static_cast<int>(2 + engine.power * 10);
 								f.number = { number_min, number_max };
-								if (mega_boom && !engine.activation_sound.empty())
+								if (mega_boom && !engine.activation_sound.empty()) {
+									f.direction = { rynx::math::rotatedXY(-forward, 1.2f), rynx::math::rotatedXY(-forward, -1.2f) };
 									f.number = { 300 , 700 };
+								}
 
 								f.radius = { 0.6f + 0.4f * engine.power, 1.3f + 0.7f * engine.power };
 								f.lifetime = { 0.2f, 0.5f };
@@ -401,10 +591,10 @@ int main(int argc, char** argv) {
 									p_info,
 									rynx::components::position(fume.position(random())),
 									rynx::components::radius(p_info.radius.begin),
-									rynx::components::motion(fume.direction(quadratic_favor_middle) * 120 * random(0.6f, 1.8f) * lifetime_modifier, random(-1.0f, +1.0f)),
+									rynx::components::motion(fume.direction(quadratic_favor_middle).normalize() * 120 * random(0.6f, 1.8f) * lifetime_modifier, random(-1.0f, +1.0f)),
 									rynx::components::lifetime(fume.lifetime(random()) * lifetime_modifier),
 									rynx::components::color(p_info.color.begin),
-									rynx::components::dampening{ 2.0f, 1.0f },
+									rynx::components::dampening{ -1.0f, 0.0f },
 									rynx::components::translucent()
 								);
 							}
@@ -424,9 +614,9 @@ int main(int argc, char** argv) {
 		auto ruleset_particle_update = std::make_unique<rynx::ruleset::particle_system>();
 		auto ruleset_frustum_culling = std::make_unique<rynx::ruleset::frustum_culling>(camera);
 
-		auto ruleset_motion_updates = std::make_unique<rynx::ruleset::motion_updates>(rynx::vec3<float>(0, -60.8f, 0));
+		auto ruleset_motion_updates = std::make_unique<rynx::ruleset::motion_updates>(rynx::vec3<float>(0, -160.8f, 0));
 		auto ruleset_physical_springs = std::make_unique<rynx::ruleset::physics::springs>();
-		auto ruleset_player_controls = std::make_unique<player_controls>(gameInput);
+		auto ruleset_player_controls = std::make_unique<player_controls>();
 		auto ruleset_rocket_destruction = std::make_unique<rocket_component_destruction>();
 
 		ruleset_rocket_destruction->required_for(*ruleset_motion_updates);
@@ -451,7 +641,15 @@ int main(int argc, char** argv) {
 	rynx::math::rand64 random;
 	
 	// setup simulation initial state
+	auto construct_level = [&]()
 	{
+		static int level = 0;
+		++level;
+		
+		ecs.clear();
+		collisionDetection.clear();
+		base_simulation.clear();
+
 		std::vector<rynx::ecs::entity_id_t> ship_entities;
 		auto ship_id = ecs.create();
 		ecs.attachToEntity(ship_id,
@@ -464,8 +662,8 @@ int main(int argc, char** argv) {
 			rynx::components::color(),
 			rynx::components::mesh{ meshes->get("ball") },
 			rynx::matrix4(),
-			rynx::components::dampening({ 0.56f, 0.01f }),
-			rynx::components::frame_collisions()
+			rynx::components::dampening({ 0.10f, 0.0f }),
+			rynx::components::collision_custom_reaction()
 		);
 		
 		auto top_part = ecs.create(
@@ -478,8 +676,8 @@ int main(int argc, char** argv) {
 			rynx::components::color(),
 			rynx::components::mesh{ meshes->get("ball") },
 			rynx::matrix4(),
-			rynx::components::dampening({ 0.56f, 0.01f }),
-			rynx::components::frame_collisions()
+			rynx::components::dampening({ 0.10f, 0.0f }),
+			rynx::components::collision_custom_reaction()
 		);
 
 		auto top_part2 = ecs.create(
@@ -492,8 +690,8 @@ int main(int argc, char** argv) {
 			rynx::components::color(),
 			rynx::components::mesh{ meshes->get("ball") },
 			rynx::matrix4(),
-			rynx::components::dampening({ 0.56f, 0.01f }),
-			rynx::components::frame_collisions()
+			rynx::components::dampening({ 0.10f, 0.0f }),
+			rynx::components::collision_custom_reaction()
 		);
 
 		auto landing_fin_left = ecs.create(
@@ -506,8 +704,8 @@ int main(int argc, char** argv) {
 			rynx::components::color(),
 			rynx::components::mesh{ meshes->get("ball") },
 			rynx::matrix4(),
-			rynx::components::dampening({ 0.56f, 0.01f }),
-			rynx::components::frame_collisions()
+			rynx::components::dampening({ 0.10f, 0.0f }),
+			rynx::components::collision_custom_reaction()
 		);
 
 		auto landing_fin_right = ecs.create(
@@ -520,8 +718,8 @@ int main(int argc, char** argv) {
 			rynx::components::color(),
 			rynx::components::mesh{ meshes->get("ball") },
 			rynx::matrix4(),
-			rynx::components::dampening({ 0.56f, 0.01f }),
-			rynx::components::frame_collisions()
+			rynx::components::dampening({ 0.10f, 0.0f }),
+			rynx::components::collision_custom_reaction()
 		);
 
 		auto foo = [&](rynx::ecs::entity_id_t a, rynx::ecs::entity_id_t b, float angle, float length, float offset)
@@ -588,8 +786,7 @@ int main(int argc, char** argv) {
 		};
 
 		rotate_around(ship_id, rynx::math::pi * 0.5f); // turn rocket upright at start.
-		translate({140, 60, 0});
-
+		translate({0.0f, 360.0f, 0});
 		
 		auto moveForwardKey = gameInput.generateAndBindGameKey('W', "MoveForward");
 		auto turnRightKey = gameInput.generateAndBindGameKey('D', "TurnRight");
@@ -619,20 +816,23 @@ int main(int argc, char** argv) {
 			ecs[dst].get<std::vector<ship_engine_state>>().emplace_back(engine);
 		};
 
-		attach_engine_to(ship_id, { moveForwardKey }, "engine_ignition_boom", "engine", 0, 5.0f, 0.6f);
-		attach_engine_to(landing_fin_left, { moveForwardKey, turnRightKey }, "", "engine", 0, 15.0f, 0.1f);
+		attach_engine_to(ship_id, { moveForwardKey }, "engine_ignition_boom", "engine", 0, 5.0f, 1.6f);
+		attach_engine_to(landing_fin_left, { moveForwardKey, turnRightKey }, "", "engine", 0, 15.0f, 0.4f);
 		attach_engine_to(landing_fin_left, { moveBackwardKey, turnLeftKey}, "", "steering", rynx::math::pi, 15.0f, 0.25f);
 
-		attach_engine_to(landing_fin_right, { moveForwardKey, turnLeftKey }, "", "engine", 0, 15.0f, 0.1f);
+		attach_engine_to(landing_fin_right, { moveForwardKey, turnLeftKey }, "", "engine", 0, 15.0f, 0.4f);
 		attach_engine_to(landing_fin_right, { moveBackwardKey, turnRightKey}, "", "steering", rynx::math::pi, 15.0f, 0.25f);
 		
-		attach_engine_to(top_part2, { turnLeftKey }, "", "steering", +rynx::math::pi * 0.5f, 15.0f, 0.1f);
-		attach_engine_to(top_part2, { turnRightKey }, "", "steering", -rynx::math::pi * 0.5f, 15.0f, 0.1f);
+		attach_engine_to(top_part2, { turnLeftKey }, "", "steering", +rynx::math::pi * 0.5f, 105.0f, 0.3f);
+		attach_engine_to(top_part2, { turnRightKey }, "", "steering", -rynx::math::pi * 0.5f, 105.0f, 0.3f);
+
+
+		// ship is now constructed. lets build terrain next.
 
 		auto makeBox_inside = [&](rynx::vec3<float> pos, float angle, float edgeLength, float angular_velocity) {
 			auto mesh_name = std::to_string(pos.y * pos.x - pos.y - pos.x);
 			auto polygon = rynx::Shape::makeAAOval(0.5f, 40, edgeLength, edgeLength * 0.5f);
-			auto* mesh_p = meshes->create(mesh_name, rynx::polygon_triangulation().generate_polygon_boundary(polygon));
+			auto* mesh_p = meshes->create(mesh_name, rynx::polygon_triangulation().generate_polygon_boundary(polygon, application.textures()->textureLimits("Empty")));
 			return base_simulation.m_ecs.create(
 				rynx::components::position(pos, angle),
 				rynx::components::collisions{ collisionCategoryStatic.value },
@@ -649,42 +849,84 @@ int main(int argc, char** argv) {
 
 		auto makeBox_outside = [&](rynx::vec3<float> pos, float angle, float edgeLength, float angular_velocity) {
 			auto mesh_name = std::to_string(pos.y * pos.x);
-			auto polygon = rynx::Shape::makeRectangle(edgeLength, 5.0f);
-			auto* mesh_p = meshes->create(mesh_name, rynx::polygon_triangulation().generate_polygon_boundary(polygon));
+			auto polygon = rynx::Shape::makeRectangle(edgeLength, edgeLength);
+			auto* mesh_p = meshes->create(mesh_name, rynx::polygon_triangulation().generate_polygon_boundary(polygon, application.textures()->textureLimits("Empty")));
 			float radius = polygon.radius();
 			return base_simulation.m_ecs.create(
 				rynx::components::position(pos, angle),
 				rynx::components::collisions{ collisionCategoryStatic.value },
-				rynx::components::boundary({ polygon.generateBoundary_Outside(1.0f) }),
+				rynx::components::boundary({ polygon.generateBoundary_Outside(1.0f) }, pos, angle),
 				rynx::components::mesh(mesh_p),
 				rynx::matrix4(),
 				rynx::components::radius(radius),
 				rynx::components::color({ 0.2f, 1.0f, 0.3f, 1.0f }),
-				rynx::components::motion({ 0, 0, 0 }, angular_velocity),
+				// rynx::components::motion({ 0, 0, 0 }, angular_velocity),
 				rynx::components::physical_body(std::numeric_limits<float>::max(), std::numeric_limits<float>::max(), 0.0f, 1.0f),
-				rynx::components::ignore_gravity(),
-				rynx::components::dampening{ 0.50f, 1.0f }
+				rynx::components::ignore_gravity()
+				// rynx::components::dampening{ 0.50f, 1.0f }
 			);
 		};
 
-		/*
-		for (int i = 0; i < 20; ++i)
-			makeBox_inside({ +20, +15 - i * 15.0f, 0 }, 0.0f + i * 0.1f, 2.0f, -0.05f);
-		*/
+		std::vector<float> heightmap(100);
 
+		std::function<void(int, int)> gen = [&](int a, int b) {
+			if (b == a + 1 || b == a) {
+				return;
+			}
+			
+			float midvalue = (heightmap[a] + heightmap[b]) * 0.5f;
+			int range = ((b - a) >> 1);
+			int midpoint = a  + range;
+			heightmap[midpoint] = midvalue + 20 * range * random(-1.0f, +0.5f);
+
+			gen(a, midpoint);
+			gen(midpoint, b);
+		};
+
+		heightmap.front() = 0;
+		heightmap[heightmap.size() / 2] = -100.0f;
+		heightmap.back() = 0;
+
+		gen(0, heightmap.size() / 2);
+		gen(heightmap.size() / 2, heightmap.size() - 1);
+
+		rynx::polygon p;
+		
+		float x_value = -500.0f;
+		for (auto y_value : heightmap) {
+			p.vertices.emplace_back(x_value, y_value, 0.0f);
+			x_value += 10.0f;
+		}
+		
+		p.vertices.emplace_back(600.0f, +1000.0f, 0.0f);
+		p.vertices.emplace_back(-600.0f, +1000.0f, 0.0f);
+		
+		std::string mesh_name("terrain");
+		meshes->erase(mesh_name);
+		auto* mesh_p = meshes->create(mesh_name, rynx::polygon_triangulation().generate_polygon_boundary(p, application.textures()->textureLimits("Empty")));
+		float radius = p.radius();
+		return base_simulation.m_ecs.create(
+			rynx::components::position({}, 0.0f),
+			rynx::components::collisions{ collisionCategoryStatic.value },
+			rynx::components::boundary({ p.generateBoundary_Inside(1.0f) }, {}, 0.0f),
+			rynx::components::mesh(mesh_p),
+			rynx::matrix4(),
+			rynx::components::radius(radius),
+			rynx::components::color({ 0.2f, 1.0f, 0.3f, 1.0f }),
+			// rynx::components::motion({ 0, 0, 0 }, angular_velocity),
+			rynx::components::physical_body(std::numeric_limits<float>::max(), std::numeric_limits<float>::max(), 0.0f, 1.0f),
+			rynx::components::ignore_gravity(),
+			rynx::components::dampening{ 0.50f, 1.0f }
+		);
+
+		/*
 		// makeBox_inside({ -5, -30, 0 }, +0.3f, 40.f, -0.025f);
 		makeBox_outside({ -15, -50, 0 }, -0.3f, 65.f, +0.58f);
-
-		// makeBox_inside({ -65, -100, 0 }, 0.f, 60.f, -0.030f);
 		makeBox_outside({ -65, -100, 0 }, -0.3f, 65.f, -0.24f);
+		*/
+	};
 
-		// makeBox_inside({ +25, -120, 0 }, +0.5f, 80.f, +0.015f);
-		makeBox_outside({ +25, -120, 0 }, -0.3f, 65.f, -0.12f);
-
-		makeBox_outside({ 0, -170, 0 }, -0.0f, 100.0f, 0.f);
-		makeBox_outside({ -80, -160, 0 }, -0.3f, 1000.0f, 0.f);
-		makeBox_outside({ +80, -160, 0 }, +0.3f, 1000.0f, 0.f);
-	}
+	construct_level();
 
 	// setup some debug controls
 	float sleepTime = 0.9f;
@@ -714,6 +956,7 @@ int main(int argc, char** argv) {
 	debug_conf conf;
 
 	// construct menus
+	if constexpr(false)
 	{
 		auto sampleButton = std::make_shared<rynx::menu::Button>(*application.textures(), "Frame", &root, rynx::vec3<float>(0.4f, 0.1f, 0), rynx::vec3<float>(), 0.14f);
 		auto sampleButton2 = std::make_shared<rynx::menu::Button>(*application.textures(), "Frame", &root, rynx::vec3<float>(0.4f, 0.1f, 0), rynx::vec3<float>(), 0.16f);
@@ -793,6 +1036,7 @@ int main(int argc, char** argv) {
 
 	rynx::graphics::screenspace_draws(); // initialize gpu buffers for screenspace ops.
 	rynx::application::renderer render(application, camera);
+	render.set_lights_resolution(1.0f, 1.0f); // reduce pixels to make shit look bad
 
 	auto camera_orientation_key = gameInput.generateAndBindGameKey(gameInput.getMouseKeyPhysical(1), "camera_orientation");
 
@@ -817,6 +1061,7 @@ int main(int argc, char** argv) {
 
 		auto mousePos = application.input()->getCursorPosition();
 		cameraPosition.tick(dt * 3);
+		audio.set_listener_position(cameraPosition);
 
 		{
 			rynx_profile("Main", "update camera");
@@ -929,35 +1174,61 @@ int main(int argc, char** argv) {
 						return std::to_string(prop.min()) + "/" + std::to_string(prop.avg()) + "/" + std::to_string(prop.max()) + "ms";
 					};
 
-					application.textRenderer().drawText(std::string("logic:    ") + get_min_avg_max(logic_time), -0.9f, 0.40f + info_text_pos_y, 0.05f, Color::DARK_GREEN, rynx::TextRenderer::Align::Left, fontConsola);
-					application.textRenderer().drawText(std::string("draw:     ") + get_min_avg_max(render_time), -0.9f, 0.35f + info_text_pos_y, 0.05f, Color::DARK_GREEN, rynx::TextRenderer::Align::Left, fontConsola);
-					application.textRenderer().drawText(std::string("swap:     ") + get_min_avg_max(swap_time), -0.9f, 0.30f + info_text_pos_y, 0.05f, Color::DARK_GREEN, rynx::TextRenderer::Align::Left, fontConsola);
-					application.textRenderer().drawText(std::string("total:    ") + get_min_avg_max(total_time), -0.9f, 0.25f + info_text_pos_y, 0.05f, Color::DARK_GREEN, rynx::TextRenderer::Align::Left, fontConsola);
-					application.textRenderer().drawText(std::string("bodies:   ") + std::to_string(ecs.query().in<rynx::components::physical_body>().count()), -0.9f, 0.20f + info_text_pos_y, 0.05f, Color::DARK_GREEN, rynx::TextRenderer::Align::Left, fontConsola);
-					application.textRenderer().drawText(std::string("entities: ") + std::to_string(num_entities), -0.9f, 0.15f + info_text_pos_y, 0.05f, Color::DARK_GREEN, rynx::TextRenderer::Align::Left, fontConsola);
-					application.textRenderer().drawText(std::string("frustum culled: ") + std::to_string(ecs.query().in<rynx::components::frustum_culled>().count()), -0.9f, 0.10f + info_text_pos_y, 0.05f, Color::DARK_GREEN, rynx::TextRenderer::Align::Left, fontConsola);
-					application.textRenderer().drawText(std::string("visible: ") + std::to_string(ecs.query().notIn<rynx::components::frustum_culled>().count()), -0.9f, 0.05f + info_text_pos_y, 0.05f, Color::DARK_GREEN, rynx::TextRenderer::Align::Left, fontConsola);
+					if constexpr (false) {
+						application.textRenderer().drawText(std::string("logic:    ") + get_min_avg_max(logic_time), -0.9f, 0.40f + info_text_pos_y, 0.05f, Color::DARK_GREEN, rynx::TextRenderer::Align::Left, fontConsola);
+						application.textRenderer().drawText(std::string("draw:     ") + get_min_avg_max(render_time), -0.9f, 0.35f + info_text_pos_y, 0.05f, Color::DARK_GREEN, rynx::TextRenderer::Align::Left, fontConsola);
+						application.textRenderer().drawText(std::string("swap:     ") + get_min_avg_max(swap_time), -0.9f, 0.30f + info_text_pos_y, 0.05f, Color::DARK_GREEN, rynx::TextRenderer::Align::Left, fontConsola);
+						application.textRenderer().drawText(std::string("total:    ") + get_min_avg_max(total_time), -0.9f, 0.25f + info_text_pos_y, 0.05f, Color::DARK_GREEN, rynx::TextRenderer::Align::Left, fontConsola);
+						application.textRenderer().drawText(std::string("bodies:   ") + std::to_string(ecs.query().in<rynx::components::physical_body>().count()), -0.9f, 0.20f + info_text_pos_y, 0.05f, Color::DARK_GREEN, rynx::TextRenderer::Align::Left, fontConsola);
+						application.textRenderer().drawText(std::string("entities: ") + std::to_string(num_entities), -0.9f, 0.15f + info_text_pos_y, 0.05f, Color::DARK_GREEN, rynx::TextRenderer::Align::Left, fontConsola);
+						application.textRenderer().drawText(std::string("frustum culled: ") + std::to_string(ecs.query().in<rynx::components::frustum_culled>().count()), -0.9f, 0.10f + info_text_pos_y, 0.05f, Color::DARK_GREEN, rynx::TextRenderer::Align::Left, fontConsola);
+						application.textRenderer().drawText(std::string("visible: ") + std::to_string(ecs.query().notIn<rynx::components::frustum_culled>().count()), -0.9f, 0.05f + info_text_pos_y, 0.05f, Color::DARK_GREEN, rynx::TextRenderer::Align::Left, fontConsola);
+					}
 
-					auto player_positions = ecs.query().in<health>().gather<rynx::components::position>();
+					auto player_positions = ecs.query().in<health>().gather<rynx::components::position, rynx::components::motion>();
 					rynx::vec3f player_position = std::reduce(player_positions.begin(), player_positions.end(), rynx::vec3f(), [](const auto& a, const auto& b) { return a + std::get<0>(b).value; });
+					rynx::vec3f player_velocity = std::reduce(player_positions.begin(), player_positions.end(), rynx::vec3f(), [](const auto& a, const auto& b) { return a + std::get<1>(b).velocity; });
 
 					static rynx::floats4 success_color(0, 0, 0, 0);
+					static std::string game_result_text;
+					static std::string game_result_desc;
 					int32_t rocket_parts_alive = ecs.query().in<health>().count();
 					int32_t success_rate = rocket_parts_alive * 100 / 5;
 
 					if (rocket_parts_alive > 0) {
 						player_position *= 1.0f / rocket_parts_alive;
+						player_velocity *= 1.0f / rocket_parts_alive;
 						player_position.z = camera->position().z;
-						cameraPosition = player_position;
+
+						float linear_speed = player_velocity.length();
+						player_velocity.normalize();
+
+						float look_ahead_mul = std::atan(0.005f * linear_speed);
+						cameraPosition = player_position + 200.0f * player_velocity * look_ahead_mul * look_ahead_mul;
 					}
 
 					if (g_success_timer > 2.0f) {
-						success_color += (rynx::floats4(1.0f - success_rate * 0.01f, success_rate * 0.01f, 0.0f, 1.0f) - success_color) * dt;
+						float sqr_success = success_rate * success_rate * 0.01f * 0.01f;
+						success_color += (rynx::floats4(1.0f - sqr_success, sqr_success, 0.0f, 1.0f) - success_color) * dt * 3.0f;
+						if (success_rate > 99) {
+							game_result_desc = "";
+							game_result_text = "Mission Success";
+						}
+						else if (success_rate > 70) {
+							game_result_desc = "Rocket Damaged";
+							game_result_text = "Mission Failed";
+						}
+						else {
+							game_result_desc = "Rocket Destroyed";
+							game_result_text = "Mission Failed";
+						}
 					}
 					else {
-						success_color += (rynx::floats4(0,0,0,0) - success_color) * dt;
+						success_color += (rynx::floats4(0,0,0,0) - success_color) * dt * 3.0f;
 					}
-					application.textRenderer().drawText(std::to_string(success_rate) + std::string("% success"), 0.0f, 0.0f, 0.15f, success_color, rynx::TextRenderer::Align::Center, fontConsola);
+					
+					application.textRenderer().drawText(game_result_desc, 0.0f, 0.15f, 0.15f, success_color, rynx::TextRenderer::Align::Center, fontConsola);
+					application.textRenderer().drawText(game_result_text, 0.0f, 0.0f, 0.15f, success_color, rynx::TextRenderer::Align::Center, fontConsola);
 				}
 
 				scheduler.wait_until_complete();
@@ -1038,7 +1309,7 @@ int main(int argc, char** argv) {
 
 		{
 			rynx_profile("Main", "Clean up dead entitites");
-			dt = std::min(0.016f, std::max(0.001f, frame_timer_dt.time_since_last_access_ms() * 0.001f));
+			dt = std::min(0.016f, std::max(0.0001f, frame_timer_dt.time_since_last_access_ms() * 0.001f));
 
 			// mark time constrained entities for removal.
 			{
@@ -1049,122 +1320,6 @@ int main(int argc, char** argv) {
 				
 				for (auto&& id : ids)
 					ecs.attachToEntity(id, rynx::components::dead());
-			}
-
-			// rocket part hp things. remove engines & health components when hp reaches zero.
-			{
-				std::vector<rynx::ecs::id> ids = ecs.query().ids_if([](health hp) {
-					return hp.current <= 0.0f;
-				});
-
-				for (auto&& id : ids) {
-					if (ecs[id].has<std::vector<ship_engine_state>>())
-						ecs.removeFromEntity<std::vector<ship_engine_state>, health>(id);
-					else
-						ecs.removeFromEntity<health>(id);
-
-					// explosion particles
-					{
-						rynx::components::position pos = ecs[id].get<rynx::components::position>();
-
-						// also play some explosy sound or something. why not.
-						audio.play_sound(sounds.get("rocket_death"), pos.value);
-
-						range<rynx::floats4> start_color{ rynx::floats4{0.5f, 0.5f, 0.5f, 1.0f}, rynx::floats4{0.3f, 0.3f, 0.3f, 1.0f} };
-						range<rynx::floats4> end_color{ rynx::floats4{0.7f, 0.0f, 0.0f, 0.0f}, rynx::floats4{0.3f, 0.6f, 0.1f, 0.0f} };
-						range<float> start_radius{ 2.0f, 3.5f };
-						range<float> end_radius{ 0.0f, 0.1f };
-
-						for (int i = 0; i < 1000; ++i) {
-							rynx::components::particle_info p_info;
-							p_info.color.begin = start_color(random());
-							p_info.color.end = end_color(random());
-							p_info.radius.begin = start_radius(random());
-							p_info.radius.end = end_radius(random());
-
-							rynx::vec3f velocity{ random(0.0f, 300.0f), 0, 0 };
-							rynx::math::rotateXY(velocity, random(rynx::math::pi * 2.0f));
-
-							auto particle_id = ecs.create(
-								p_info,
-								pos,
-								rynx::components::radius(p_info.radius.begin),
-								rynx::components::motion(velocity, random(-1.0f, +1.0f)),
-								rynx::components::lifetime(random(1.0f, 2.0f)),
-								rynx::components::color(p_info.color.begin),
-								rynx::components::dampening{ 0.1f, 1.0f },
-								rynx::components::translucent()
-							);
-						}
-
-						// lights up for explosion.
-						rynx::components::light_omni explosion_light;
-						explosion_light.ambient = 0.1f;
-						explosion_light.color = { 1.0f, 1.0f, 1.0f, 20.f };
-						explosion_light.attenuation_linear = 1.0f;
-						explosion_light.attenuation_quadratic = 0.05f;
-						ecs.create(
-							rynx::components::lifetime(random(1.0f, 2.0f)),
-							explosion_light,
-							pos,
-							rynx::components::radius(20.0f)
-						);
-					}
-				}
-
-				// also we need to detach joints connecting to the dead rocket parts.
-				// and create new physics parts for the joints to connect to.
-
-				auto contains = [](const auto& vec, rynx::ecs::id id) { bool answer = false; for (auto&& bleb : vec) { answer |= (bleb == id); } return answer; };
-				auto joints_a = ecs.query().ids_if([&contains, &ids](const rynx::components::phys::joint& j) { return contains(ids, j.id_a); });
-				auto joints_b = ecs.query().ids_if([&contains, &ids](const rynx::components::phys::joint& j) { return contains(ids, j.id_b); });
-
-				for (auto id : joints_a) {
-					auto target_id = ecs[id].get<rynx::components::phys::joint>().id_a;
-					rynx::components::position pos = ecs[target_id].get<const rynx::components::position>();
-					rynx::components::motion m = ecs[target_id].get<const rynx::components::motion>();
-					rynx::components::collisions col = ecs[target_id].get<const rynx::components::collisions>();
-					auto dummy_id = ecs.create(
-						pos,
-						m,
-						col,
-						rynx::components::radius(1.0f),
-						rynx::components::physical_body(10.0f, 10.0f, 0.0f, 1.0f, 0),
-						rynx::components::color{ {1, 1, 1, 0} },
-						rynx::components::dampening{ 0.5f, 0.5f },
-						rynx::components::translucent()
-					);
-
-					ecs[id].get<rynx::components::phys::joint>().id_a = dummy_id;
-					ecs[id].get<rynx::components::phys::joint>().point_a = { 0, 0, 0 };
-				}
-
-				for (auto id : joints_b) {
-					auto target_id = ecs[id].get<rynx::components::phys::joint>().id_b;
-					rynx::components::position pos = ecs[target_id].get<const rynx::components::position>();
-					rynx::components::motion m = ecs[target_id].get<const rynx::components::motion>();
-					rynx::components::collisions col = ecs[target_id].get<const rynx::components::collisions>();
-					auto dummy_id = ecs.create(
-						pos,
-						m,
-						col,
-						rynx::components::radius(1.0f),
-						rynx::components::physical_body(10.0f, 10.0f, 0.0f, 1.0f, 0),
-						rynx::components::color{ {1, 1, 1, 0} },
-						rynx::components::dampening{ 0.5f, 0.5f },
-						rynx::components::translucent()
-					);
-
-					ecs[id].get<rynx::components::phys::joint>().id_b = dummy_id;
-					ecs[id].get<rynx::components::phys::joint>().point_b = { 0, 0, 0 };
-				}
-			}
-
-			// update explosion lights intensity
-			{
-				ecs.query().for_each([](rynx::components::lifetime lt, rynx::components::light_omni& light) {
-					light.color.a = 20.0f * lt;
-				});
 			}
 
 			auto ids_dead = ecs.query().in<rynx::components::dead>().ids();
@@ -1181,12 +1336,19 @@ int main(int argc, char** argv) {
 		}
 
 		{
+		/*
 			rynx_profile("Main", "Sleep");
 			// NOTE: Frame time can be edited during runtime for debugging reasons.
 			if (gameInput.isKeyDown(slowTime)) { sleepTime *= 1.1f; }
 			if (gameInput.isKeyDown(fastTime)) { sleepTime *= 0.9f; }
 
 			std::this_thread::sleep_for(std::chrono::milliseconds(int(sleepTime)));
+			*/
+		}
+
+		if (g_success_timer > 5.0f) {
+			construct_level();
+			g_success_timer = 0.0f;
 		}
 	}
 
