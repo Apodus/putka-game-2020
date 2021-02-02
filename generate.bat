@@ -1,7 +1,5 @@
 @echo off
-cd rynx/generate
-"./sharpmake/Sharpmake.Application.exe" /sources(@"../../generate/main.sharpmake.cs")
-cd ..
+"./rynx/tools/sharpmake/bootstrap.bat" "../../../generate/main.sharpmake.cs"
 @if %errorlevel% neq 0 goto :error
 
 @goto :exit

@@ -55,7 +55,7 @@ class PutkaGame : Solution
 	}
 }
 
-internal static class main
+public class EntryPointMain
 {
     [Main]
     public static void SharpmakeMain(Sharpmake.Arguments sharpmakeArgs)

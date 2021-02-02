@@ -54,15 +54,6 @@ struct range {
 	}
 };
 
-namespace rynx {
-	namespace components {
-		struct position_relative {
-			rynx::ecs::id host;
-			vec3f relative_pos;
-		};
-	}
-}
-
 float g_success_timer = 0;
 
 int main(int argc, char** argv) {
@@ -76,9 +67,9 @@ int main(int argc, char** argv) {
 	rynx::application::Application application;
 	application.openWindow(1920, 1080);
 	application.loadTextures("../textures/textures.txt");
-	application.meshRenderer().loadDefaultMesh("Empty");
+	application.renderer().loadDefaultMesh("Empty");
 
-	auto meshes = application.meshRenderer().meshes();
+	auto meshes = application.renderer().meshes();
 	{
 		meshes->create("ball", rynx::Shape::makeCircle(1.0f, 32), "Hero");
 		meshes->create("circle_empty", rynx::Shape::makeCircle(1.0f, 32), "Empty");
@@ -165,7 +156,7 @@ int main(int argc, char** argv) {
 		float startup_time_multiplier = 0;
 		float power = 0;
 
-		std::vector<int32_t> activated_by_keys;
+		std::vector<rynx::key::logical> activated_by_keys;
 
 		// runtime data
 		float activity = 0;
@@ -252,7 +243,7 @@ int main(int argc, char** argv) {
 
 					// explosion particles
 					{
-						rynx::components::position pos = ecs[id].get<rynx::components::position>();
+						rynx::components::position pos = ecs[id].get<const rynx::components::position>();
 
 						// also play some explosy sound or something. why not.
 						audio.play_sound(sounds.get("rocket_death"), pos.value);
@@ -264,10 +255,8 @@ int main(int argc, char** argv) {
 
 						for (int i = 0; i < 1000; ++i) {
 							rynx::components::particle_info p_info;
-							p_info.color.begin = start_color(random());
-							p_info.color.end = end_color(random());
-							p_info.radius.begin = start_radius(random());
-							p_info.radius.end = end_radius(random());
+							p_info.color_range = { start_color(random()), end_color(random()) };
+							p_info.radius_range = { start_radius(random()), end_radius(random()) };
 
 							rynx::vec3f velocity{ random(0.0f, 200.0f), 0, 0 };
 							rynx::math::rotateXY(velocity, random(rynx::math::pi * 2.0f));
@@ -275,12 +264,13 @@ int main(int argc, char** argv) {
 							ecs.create(
 								p_info,
 								pos,
-								rynx::components::radius(p_info.radius.begin),
+								rynx::components::radius(p_info.radius_range.begin),
 								rynx::components::motion(velocity, random(-1.0f, +1.0f)),
 								rynx::components::lifetime(random(1.0f, 2.0f)),
-								rynx::components::color(p_info.color.begin),
+								rynx::components::color(p_info.color_range.begin),
 								rynx::components::dampening{ 0.9f, 1.0f },
-								rynx::components::translucent()
+								rynx::components::translucent(),
+								rynx::matrix4()
 							);
 						}
 
@@ -291,7 +281,7 @@ int main(int argc, char** argv) {
 						explosion_light.attenuation_linear = 1.0f;
 						explosion_light.attenuation_quadratic = 0.05f;
 						ecs.create(
-							rynx::components::lifetime(random(1.0f, 2.0f)),
+							rynx::components::lifetime(random(1.0f, 3.0f)),
 							explosion_light,
 							pos,
 							rynx::components::radius(20.0f)
@@ -309,10 +299,8 @@ int main(int argc, char** argv) {
 						range<float> end_radius{ 0.0f, 0.1f };
 
 						rynx::components::particle_info p_info;
-						p_info.color.begin = start_color(random());
-						p_info.color.end = end_color(random());
-						p_info.radius.begin = start_radius(random());
-						p_info.radius.end = end_radius(random());
+						p_info.color_range = { start_color(random()), end_color(random()) };
+						p_info.radius_range = { start_radius(random()), end_radius(random()) };
 
 						rynx::vec3f velocity{ random(10.0f, 30.0f), 0, 0 };
 
@@ -325,14 +313,15 @@ int main(int argc, char** argv) {
 						ecs.create(
 							p_info,
 							pos,
-							rynx::components::radius(p_info.radius.begin),
+							rynx::components::radius(p_info.radius_range.begin),
 							rynx::components::motion(velocity, random(-1.0f, +1.0f)),
 							rynx::components::lifetime(random(0.6f, 1.2f)),
-							rynx::components::color(p_info.color.begin),
+							rynx::components::color(p_info.color_range.begin),
 							rynx::components::dampening{ 0.6f, 1.0f },
 							rynx::components::translucent(),
 							rynx::components::ignore_gravity(),
-							fire_lift{ 100.0f * upness }
+							fire_lift{ 100.0f * upness },
+							rynx::matrix4()
 						);
 					}
 				}
@@ -351,10 +340,8 @@ int main(int argc, char** argv) {
 						range<float> end_radius{ 0.0f, 0.1f };
 
 						rynx::components::particle_info p_info;
-						p_info.color.begin = start_color(random());
-						p_info.color.end = end_color(random());
-						p_info.radius.begin = start_radius(random());
-						p_info.radius.end = end_radius(random());
+						p_info.color_range = { start_color(random()), end_color(random()) };
+						p_info.radius_range = { start_radius(random()), end_radius(random()) };
 
 						rynx::vec3f velocity{ random(10.0f, 30.0f), 0, 0 };
 						float rot_v = rynx::math::pi * 0.5f;
@@ -366,14 +353,15 @@ int main(int argc, char** argv) {
 						ecs.create(
 							p_info,
 							pos,
-							rynx::components::radius(p_info.radius.begin),
+							rynx::components::radius(p_info.radius_range.begin),
 							rynx::components::motion(velocity, random(-1.0f, +1.0f)),
 							rynx::components::lifetime(random(0.6f, 1.2f)),
-							rynx::components::color(p_info.color.begin),
+							rynx::components::color(p_info.color_range.begin),
 							rynx::components::dampening{ 0.6f, 1.0f },
 							rynx::components::translucent(),
 							rynx::components::ignore_gravity(),
-							fire_lift{100.0f * upness}
+							fire_lift{100.0f * upness},
+							rynx::matrix4()
 						);
 					}
 				}
@@ -397,10 +385,11 @@ int main(int argc, char** argv) {
 						m,
 						col,
 						rynx::components::radius(1.0f),
-						rynx::components::physical_body(10.0f, 10.0f, 0.0f, 1.0f, 0),
+						rynx::components::physical_body().mass(10.0f).moment_of_inertia(10.0f).elasticity(0.0f).friction(1.0f),
 						rynx::components::color{ {1, 1, 1, 0} },
 						rynx::components::dampening{ 0.5f, 0.5f },
-						rynx::components::translucent()
+						rynx::components::translucent(),
+						rynx::matrix4()
 					);
 
 					ecs[id].get<rynx::components::phys::joint>().id_a = dummy_id;
@@ -417,10 +406,11 @@ int main(int argc, char** argv) {
 						m,
 						col,
 						rynx::components::radius(1.0f),
-						rynx::components::physical_body(10.0f, 10.0f, 0.0f, 1.0f, 0),
+						rynx::components::physical_body().mass(10.0f).moment_of_inertia(10.0f).elasticity(0.0f).friction(1.0f),
 						rynx::components::color{ {1, 1, 1, 0} },
 						rynx::components::dampening{ 0.5f, 0.5f },
-						rynx::components::translucent()
+						rynx::components::translucent(),
+						rynx::matrix4()
 					);
 
 					ecs[id].get<rynx::components::phys::joint>().id_b = dummy_id;
@@ -429,8 +419,8 @@ int main(int argc, char** argv) {
 
 				// update explosion lights intensity
 				{
-					ecs.query().notIn<burning>().for_each([](rynx::components::lifetime lt, rynx::components::light_omni& light) {
-						light.color.a = 20.0f * lt;
+					ecs.query().for_each([](rynx::components::lifetime lt, rynx::components::light_omni& light) {
+						light.color.w = 20.0f * lt.linear_inv();
 					});
 				}
 
@@ -440,9 +430,9 @@ int main(int argc, char** argv) {
 
 	class player_controls : public rynx::application::logic::iruleset {
 		rynx::math::rand64 random;
-
+		rynx::graphics::mesh* m_mesh = nullptr;
 	public:
-		player_controls() {}
+		player_controls(rynx::graphics::mesh* mesh) :m_mesh(mesh) {}
 		
 		virtual ~player_controls() {}
 		
@@ -560,7 +550,7 @@ int main(int argc, char** argv) {
 						}
 
 						auto& engine_light = ecs[engine.light_id].get<rynx::components::light_omni>();
-						engine_light.color.a = 20.0f * engine.activity * engine.activity * engine.power;
+						engine_light.color.w = 20.0f * engine.activity * engine.activity * engine.power;
 						engine_light.ambient = std::clamp(engine.activity * engine.activity * engine.power, 0.0f, 1.0f);
 						if (engine.activity < 0.25f)
 							engine.is_roaring = false;
@@ -573,13 +563,13 @@ int main(int argc, char** argv) {
 							int num_fumes = fume.number(random());
 							for (int i = 0; i < num_fumes; ++i) {
 								rynx::components::particle_info p_info;
-								p_info.color.begin = fume.color(random());
-								p_info.color.end = p_info.color.begin;
-								p_info.color.end.a = 0.0f;
-								p_info.color.end.r *= 0.5f;
-								p_info.color.end.g *= 0.5f;
-								p_info.radius.begin = fume.radius(random());
-								p_info.radius.end = p_info.radius.begin * 2.0f;
+								p_info.color_range.begin = fume.color(random());
+								p_info.color_range.end = p_info.color_range.begin;
+								p_info.color_range.end.w = 0.0f;
+								p_info.color_range.end.x *= 0.5f;
+								p_info.color_range.end.y *= 0.5f;
+								p_info.radius_range.begin = fume.radius(random());
+								p_info.radius_range.end = p_info.radius_range.begin * 2.0f;
 
 								float quadratic_favor_middle = random(-1.0f, +1.0f) * random(-1.0f, +1.0f);
 								float lifetime_modifier = 1.0f - std::abs(quadratic_favor_middle);
@@ -590,12 +580,14 @@ int main(int argc, char** argv) {
 								auto particle_id = ecs.create(
 									p_info,
 									rynx::components::position(fume.position(random())),
-									rynx::components::radius(p_info.radius.begin),
+									rynx::components::radius(p_info.radius_range.begin),
 									rynx::components::motion(fume.direction(quadratic_favor_middle).normalize() * 120 * random(0.6f, 1.8f) * lifetime_modifier, random(-1.0f, +1.0f)),
 									rynx::components::lifetime(fume.lifetime(random()) * lifetime_modifier),
-									rynx::components::color(p_info.color.begin),
-									rynx::components::dampening{ -1.0f, 0.0f },
-									rynx::components::translucent()
+									rynx::components::color(p_info.color_range.begin),
+									rynx::components::dampening{ 0.0f, 0.0f },
+									rynx::components::translucent(),
+									rynx::components::mesh(m_mesh),
+									rynx::matrix4()
 								);
 							}
 						}
@@ -616,7 +608,7 @@ int main(int argc, char** argv) {
 
 		auto ruleset_motion_updates = std::make_unique<rynx::ruleset::motion_updates>(rynx::vec3<float>(0, -160.8f, 0));
 		auto ruleset_physical_springs = std::make_unique<rynx::ruleset::physics::springs>();
-		auto ruleset_player_controls = std::make_unique<player_controls>();
+		auto ruleset_player_controls = std::make_unique<player_controls>(meshes->get("circle_empty"));
 		auto ruleset_rocket_destruction = std::make_unique<rocket_component_destruction>();
 
 		ruleset_rocket_destruction->required_for(*ruleset_motion_updates);
@@ -656,7 +648,7 @@ int main(int argc, char** argv) {
 			health(),
 			rynx::components::position(),
 			rynx::components::motion(),
-			rynx::components::physical_body(100, 100 * 5, 0.3f, 1.0f, 0),
+			rynx::components::physical_body().mass(100.0f).moment_of_inertia(500.0f).elasticity(0.3f).friction(1.0f),
 			rynx::components::radius(3.0f),
 			rynx::components::collisions{ collisionCategoryDynamic.value },
 			rynx::components::color(),
@@ -670,7 +662,7 @@ int main(int argc, char** argv) {
 			health(),
 			rynx::components::position({10, 0, 0}),
 			rynx::components::motion(),
-			rynx::components::physical_body(100, 100 * 5, 0.3f, 1.0f, 0),
+			rynx::components::physical_body().mass(100.0f).moment_of_inertia(500.0f).elasticity(0.3f).friction(1.0f),
 			rynx::components::radius(3.0f),
 			rynx::components::collisions{ collisionCategoryDynamic.value },
 			rynx::components::color(),
@@ -684,7 +676,7 @@ int main(int argc, char** argv) {
 			health(),
 			rynx::components::position({ 20, 0, 0 }),
 			rynx::components::motion(),
-			rynx::components::physical_body(100, 100 * 5, 0.3f, 1.0f, 0),
+			rynx::components::physical_body().mass(100.0f).moment_of_inertia(500.0f).elasticity(0.3f).friction(1.0f),
 			rynx::components::radius(3.0f),
 			rynx::components::collisions{ collisionCategoryDynamic.value },
 			rynx::components::color(),
@@ -698,7 +690,7 @@ int main(int argc, char** argv) {
 			health(),
 			rynx::components::position({ -7, +7, 0 }),
 			rynx::components::motion(),
-			rynx::components::physical_body(100, 100 * 5, 0.3f, 1.0f, 0),
+			rynx::components::physical_body().mass(100.0f).moment_of_inertia(500.0f).elasticity(0.3f).friction(1.0f),
 			rynx::components::radius(3.0f),
 			rynx::components::collisions{ collisionCategoryDynamic.value },
 			rynx::components::color(),
@@ -712,7 +704,7 @@ int main(int argc, char** argv) {
 			health(),
 			rynx::components::position({ -7, -7, 0 }),
 			rynx::components::motion(),
-			rynx::components::physical_body(100, 100 * 5, 0.3f, 1.0f, ship_id),
+			rynx::components::physical_body().mass(100.0f).moment_of_inertia(500.0f).elasticity(0.3f).friction(1.0f),
 			rynx::components::radius(3.0f),
 			rynx::components::collisions{ collisionCategoryDynamic.value },
 			rynx::components::color(),
@@ -793,10 +785,10 @@ int main(int argc, char** argv) {
 		auto turnLeftKey = gameInput.generateAndBindGameKey('A', "TurnLeft");
 		auto moveBackwardKey = gameInput.generateAndBindGameKey('S', "MoveBackward");
 
-		auto attach_engine_to = [&](rynx::ecs::id dst, std::vector<int32_t> activated_by_keys, std::string activation_sound, std::string engine_operating_sound, float direction, float startupTimeMultiplier, float engine_power_multiplier) {
+		auto attach_engine_to = [&](rynx::ecs::id dst, std::vector<rynx::key::logical> activated_by_keys, std::string activation_sound, std::string engine_operating_sound, float direction, float startupTimeMultiplier, float engine_power_multiplier) {
 			auto ship_engine = ecs.create(
 				rynx::components::position(),
-				rynx::components::position_relative{ dst, rynx::math::rotatedXY(rynx::vec3f(-5.0f, 0, 0), direction) },
+				rynx::components::position_relative{ dst.value, rynx::math::rotatedXY(rynx::vec3f(-5.0f, 0, 0), direction) },
 				rynx::components::light_omni({ rynx::floats4(1.0f, 1.0f, 1.0f, 0.0f), 0.0f })
 			);
 
@@ -828,47 +820,7 @@ int main(int argc, char** argv) {
 
 
 		// ship is now constructed. lets build terrain next.
-
-		auto makeBox_inside = [&](rynx::vec3<float> pos, float angle, float edgeLength, float angular_velocity) {
-			auto mesh_name = std::to_string(pos.y * pos.x - pos.y - pos.x);
-			auto polygon = rynx::Shape::makeAAOval(0.5f, 40, edgeLength, edgeLength * 0.5f);
-			auto* mesh_p = meshes->create(mesh_name, rynx::polygon_triangulation().generate_polygon_boundary(polygon, application.textures()->textureLimits("Empty")));
-			return base_simulation.m_ecs.create(
-				rynx::components::position(pos, angle),
-				rynx::components::collisions{ collisionCategoryStatic.value },
-				rynx::components::boundary({ polygon.generateBoundary_Inside(1.0f) }),
-				rynx::components::mesh(mesh_p),
-				rynx::matrix4(),
-				rynx::components::radius(polygon.radius()),
-				rynx::components::color({ 0.5f, 0.2f, 1.0f, 1.0f }),
-				rynx::components::motion({ 0, 0, 0 }, angular_velocity),
-				rynx::components::physical_body(std::numeric_limits<float>::max(), std::numeric_limits<float>::max(), 0.0f, 1.0f),
-				rynx::components::ignore_gravity()
-			);
-		};
-
-		auto makeBox_outside = [&](rynx::vec3<float> pos, float angle, float edgeLength, float angular_velocity) {
-			auto mesh_name = std::to_string(pos.y * pos.x);
-			auto polygon = rynx::Shape::makeRectangle(edgeLength, edgeLength);
-			auto* mesh_p = meshes->create(mesh_name, rynx::polygon_triangulation().generate_polygon_boundary(polygon, application.textures()->textureLimits("Empty")));
-			float radius = polygon.radius();
-			return base_simulation.m_ecs.create(
-				rynx::components::position(pos, angle),
-				rynx::components::collisions{ collisionCategoryStatic.value },
-				rynx::components::boundary({ polygon.generateBoundary_Outside(1.0f) }, pos, angle),
-				rynx::components::mesh(mesh_p),
-				rynx::matrix4(),
-				rynx::components::radius(radius),
-				rynx::components::color({ 0.2f, 1.0f, 0.3f, 1.0f }),
-				// rynx::components::motion({ 0, 0, 0 }, angular_velocity),
-				rynx::components::physical_body(std::numeric_limits<float>::max(), std::numeric_limits<float>::max(), 0.0f, 1.0f),
-				rynx::components::ignore_gravity()
-				// rynx::components::dampening{ 0.50f, 1.0f }
-			);
-		};
-
 		std::vector<float> heightmap(100);
-
 		std::function<void(int, int)> gen = [&](int a, int b) {
 			if (b == a + 1 || b == a) {
 				return;
@@ -891,39 +843,34 @@ int main(int argc, char** argv) {
 		gen(heightmap.size() / 2, heightmap.size() - 1);
 
 		rynx::polygon p;
-		
-		float x_value = -500.0f;
-		for (auto y_value : heightmap) {
-			p.vertices.emplace_back(x_value, y_value, 0.0f);
-			x_value += 10.0f;
+		{
+			auto editor = p.edit();
+			float x_value = -500.0f;
+			for (auto y_value : heightmap) {
+				editor.push_back({ x_value, y_value, 0.0f });
+				x_value += 10.0f;
+			}
+
+			editor.push_back({ 600.0f, +1000.0f, 0.0f });
+			editor.push_back({ -600.0f, +1000.0f, 0.0f });
 		}
-		
-		p.vertices.emplace_back(600.0f, +1000.0f, 0.0f);
-		p.vertices.emplace_back(-600.0f, +1000.0f, 0.0f);
-		
+
 		std::string mesh_name("terrain");
 		meshes->erase(mesh_name);
-		auto* mesh_p = meshes->create(mesh_name, rynx::polygon_triangulation().generate_polygon_boundary(p, application.textures()->textureLimits("Empty")));
+		auto* mesh_p = meshes->create(mesh_name, rynx::polygon_triangulation().make_boundary_mesh(p, application.textures()->textureLimits("Empty")), "Empty");
 		float radius = p.radius();
+		p.invert();
 		return base_simulation.m_ecs.create(
 			rynx::components::position({}, 0.0f),
 			rynx::components::collisions{ collisionCategoryStatic.value },
-			rynx::components::boundary({ p.generateBoundary_Inside(1.0f) }, {}, 0.0f),
+			rynx::components::boundary(p, {}, 0.0f),
 			rynx::components::mesh(mesh_p),
-			rynx::matrix4(),
 			rynx::components::radius(radius),
 			rynx::components::color({ 0.2f, 1.0f, 0.3f, 1.0f }),
-			// rynx::components::motion({ 0, 0, 0 }, angular_velocity),
-			rynx::components::physical_body(std::numeric_limits<float>::max(), std::numeric_limits<float>::max(), 0.0f, 1.0f),
-			rynx::components::ignore_gravity(),
-			rynx::components::dampening{ 0.50f, 1.0f }
+			rynx::components::physical_body().mass(std::numeric_limits<float>::max()).moment_of_inertia(std::numeric_limits<float>::max()).elasticity(0.0f).friction(1.0f),
+			rynx::components::dampening{ 0.50f, 1.0f },
+			rynx::matrix4()
 		);
-
-		/*
-		// makeBox_inside({ -5, -30, 0 }, +0.3f, 40.f, -0.025f);
-		makeBox_outside({ -15, -50, 0 }, -0.3f, 65.f, +0.58f);
-		makeBox_outside({ -65, -100, 0 }, -0.3f, 65.f, -0.24f);
-		*/
 	};
 
 	construct_level();
@@ -955,80 +902,6 @@ int main(int argc, char** argv) {
 
 	debug_conf conf;
 
-	// construct menus
-	if constexpr(false)
-	{
-		auto sampleButton = std::make_shared<rynx::menu::Button>(*application.textures(), "Frame", &root, rynx::vec3<float>(0.4f, 0.1f, 0), rynx::vec3<float>(), 0.14f);
-		auto sampleButton2 = std::make_shared<rynx::menu::Button>(*application.textures(), "Frame", &root, rynx::vec3<float>(0.4f, 0.1f, 0), rynx::vec3<float>(), 0.16f);
-		auto sampleButton3 = std::make_shared<rynx::menu::Button>(*application.textures(), "Frame", &root, rynx::vec3<float>(0.4f, 0.1f, 0), rynx::vec3<float>(), 0.18f);
-		auto sampleSlider = std::make_shared<rynx::menu::SlideBarVertical>(*application.textures(), "Frame", "Selection", &root, rynx::vec3<float>(0.4f, 0.1f, 0));
-		auto megaSlider = std::make_shared<rynx::menu::SlideBarVertical>(*application.textures(), "Frame", "Selection", &root, rynx::vec3<float>(0.4f, 0.1f, 0));
-
-		sampleButton->text("Dynamics").font(&fontConsola);
-		sampleButton->alignToInnerEdge(&root, rynx::menu::Align::BOTTOM_LEFT);
-		sampleButton->color_frame(Color::RED);
-		sampleButton->onClick([&conf, self = sampleButton.get()]() {
-			bool new_value = !conf.visualize_dynamic_collisions;
-			conf.visualize_dynamic_collisions = new_value;
-			if (new_value) {
-				self->color_frame(Color::GREEN);
-			}
-			else {
-				self->color_frame(Color::RED);
-			}
-		});
-
-		sampleButton2->text("Log Profile").font(&fontConsola);
-		sampleButton2->alignToOuterEdge(sampleButton.get(), rynx::menu::Align::RIGHT);
-		sampleButton2->alignToInnerEdge(sampleButton.get(), rynx::menu::Align::BOTTOM);
-		sampleButton2->onClick([]() {
-			rynx::profiling::write_profile_log();
-		});
-
-		sampleButton3->text("Statics").font(&fontConsola);
-		sampleButton3->alignToOuterEdge(sampleButton2.get(), rynx::menu::Align::TOP);
-		sampleButton3->alignToInnerEdge(sampleButton2.get(), rynx::menu::Align::LEFT);
-		sampleButton3->onClick([&conf, self = sampleButton3.get(), &root]() {
-			bool new_value = !conf.visualize_static_collisions;
-			conf.visualize_static_collisions = new_value;
-			if (new_value) {
-				self->color_frame(Color::GREEN);
-			}
-			else {
-				self->color_frame(Color::RED);
-			}
-		});
-
-		sampleSlider->alignToInnerEdge(&root, rynx::menu::Align::TOP_RIGHT);
-		sampleSlider->onValueChanged([](float f) {});
-
-		megaSlider->alignToOuterEdge(sampleSlider.get(), rynx::menu::Align::BOTTOM);
-		megaSlider->alignToInnerEdge(sampleSlider.get(), rynx::menu::Align::LEFT);
-		megaSlider->onValueChanged([](float f) {});
-
-		root.addChild(sampleButton);
-		root.addChild(sampleButton2);
-		root.addChild(sampleButton3);
-		root.addChild(sampleSlider);
-		root.addChild(megaSlider);
-	}
-
-	std::atomic<size_t> tickCounter = 0;
-
-	std::atomic<bool> dead_lock_detector_keepalive = true;
-	std::thread dead_lock_detector([&]() {
-		size_t prev_tick = 994839589;
-		std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-		while (dead_lock_detector_keepalive) {
-			if (prev_tick == tickCounter && dead_lock_detector_keepalive) {
-				scheduler.dump();
-				return;
-			}
-			prev_tick = tickCounter;
-			std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-		}
-	});
-
 	auto fbo_menu = rynx::graphics::framebuffer::config()
 		.set_default_resolution(1920, 1080)
 		.add_rgba8_target("color")
@@ -1036,7 +909,11 @@ int main(int argc, char** argv) {
 
 	rynx::graphics::screenspace_draws(); // initialize gpu buffers for screenspace ops.
 	rynx::application::renderer render(application, camera);
-	render.set_lights_resolution(1.0f, 1.0f); // reduce pixels to make shit look bad
+	auto debugDrawState = base_simulation.m_context->access_state().generate_state_id();
+	debugDrawState.disable();
+	render.light_global_ambient({0.3f, 0.3, 0.3f, 1.0f});
+	render.debug_draw_binary_config(debugDrawState);
+	render.set_lights_resolution(1.0f, 1.0f); // light resolution multiplier. 1.0f = 1:1
 
 	auto camera_orientation_key = gameInput.generateAndBindGameKey(gameInput.getMouseKeyPhysical(1), "camera_orientation");
 
@@ -1060,7 +937,7 @@ int main(int argc, char** argv) {
 		}
 
 		auto mousePos = application.input()->getCursorPosition();
-		cameraPosition.tick(dt * 3);
+		cameraPosition.tick(dt * 5);
 		audio.set_listener_position(cameraPosition);
 
 		{
@@ -1081,6 +958,7 @@ int main(int argc, char** argv) {
 			rynx::vec3f direction = rotator_y * rotator_x * rynx::vec3f(0, 0, -1);
 
 			camera->setPosition(cameraPosition);
+			camera->tick(1.0f);
 			camera->setDirection(direction);
 			camera->setProjection(0.02f, 2000.0f, application.aspectRatio());
 			camera->rebuild_view_matrix();
@@ -1097,23 +975,6 @@ int main(int argc, char** argv) {
 			// if (gameInput.isKeyDown(zoomIn)) { cameraPosition *= vec3<float>(1, 1.0f, 1.0f / camera_zoom_multiplier); }
 		}
 
-		{
-			float cameraHeight = cameraPosition->z;
-			gameInput.mouseWorldPosition(
-			(cameraPosition * rynx::vec3<float>{1, 1, 0}) +
-				mousePos * rynx::vec3<float>(cameraHeight, cameraHeight / application.aspectRatio(), 1.0f)
-			);
-		}
-
-		{
-			rynx_profile("Main", "Input handling");
-			// TODO: Simulation API
-			std::vector<std::unique_ptr<rynx::application::logic::iaction>> userActions = base_simulation.m_logic.onInput(gameInput, ecs);
-			for (auto&& action : userActions) {
-				action->apply(ecs);
-			}
-		}
-
 		timer.reset();
 		{
 			rynx_profile("Main", "Construct frame tasks");
@@ -1128,7 +989,6 @@ int main(int argc, char** argv) {
 		{
 			rynx_profile("Main", "Wait for frame end");
 			scheduler.wait_until_complete();
-			++tickCounter;
 		}
 
 		auto logic_time_us = timer.time_since_last_access_us();
@@ -1154,42 +1014,29 @@ int main(int argc, char** argv) {
 					fbo_menu->bind_as_output();
 					fbo_menu->clear();
 
-					application.meshRenderer().setDepthTest(false);
+					application.renderer().setDepthTest(false);
 
 					// 2, 2 is the size of the entire screen (in case of 1:1 aspect ratio) for menu camera. left edge is [-1, 0], top right is [+1, +1], etc.
 					// so we make it size 2,2 to cover all of that. and then take aspect ratio into account by dividing the y-size.
 					root.scale_local({ 2 , 2 / application.aspectRatio(), 0 });
 					menuCamera->setProjection(0.01f, 50.0f, application.aspectRatio());
 					menuCamera->setPosition({ 0, 0, 1 });
+					menuCamera->tick(1.0f);
 					menuCamera->rebuild_view_matrix();
 
-					application.meshRenderer().setCamera(menuCamera);
-					application.textRenderer().setCamera(menuCamera);
-					application.meshRenderer().cameraToGPU();
-					root.visualise(application.meshRenderer(), application.textRenderer());
+					application.renderer().setCamera(menuCamera);
+					application.renderer().cameraToGPU();
+					root.visualise(application.renderer());
 
-					auto num_entities = ecs.size();
-					float info_text_pos_y = +0.1f;
 					auto get_min_avg_max = [](rynx::numeric_property<float>& prop) {
 						return std::to_string(prop.min()) + "/" + std::to_string(prop.avg()) + "/" + std::to_string(prop.max()) + "ms";
 					};
 
-					if constexpr (false) {
-						application.textRenderer().drawText(std::string("logic:    ") + get_min_avg_max(logic_time), -0.9f, 0.40f + info_text_pos_y, 0.05f, Color::DARK_GREEN, rynx::TextRenderer::Align::Left, fontConsola);
-						application.textRenderer().drawText(std::string("draw:     ") + get_min_avg_max(render_time), -0.9f, 0.35f + info_text_pos_y, 0.05f, Color::DARK_GREEN, rynx::TextRenderer::Align::Left, fontConsola);
-						application.textRenderer().drawText(std::string("swap:     ") + get_min_avg_max(swap_time), -0.9f, 0.30f + info_text_pos_y, 0.05f, Color::DARK_GREEN, rynx::TextRenderer::Align::Left, fontConsola);
-						application.textRenderer().drawText(std::string("total:    ") + get_min_avg_max(total_time), -0.9f, 0.25f + info_text_pos_y, 0.05f, Color::DARK_GREEN, rynx::TextRenderer::Align::Left, fontConsola);
-						application.textRenderer().drawText(std::string("bodies:   ") + std::to_string(ecs.query().in<rynx::components::physical_body>().count()), -0.9f, 0.20f + info_text_pos_y, 0.05f, Color::DARK_GREEN, rynx::TextRenderer::Align::Left, fontConsola);
-						application.textRenderer().drawText(std::string("entities: ") + std::to_string(num_entities), -0.9f, 0.15f + info_text_pos_y, 0.05f, Color::DARK_GREEN, rynx::TextRenderer::Align::Left, fontConsola);
-						application.textRenderer().drawText(std::string("frustum culled: ") + std::to_string(ecs.query().in<rynx::components::frustum_culled>().count()), -0.9f, 0.10f + info_text_pos_y, 0.05f, Color::DARK_GREEN, rynx::TextRenderer::Align::Left, fontConsola);
-						application.textRenderer().drawText(std::string("visible: ") + std::to_string(ecs.query().notIn<rynx::components::frustum_culled>().count()), -0.9f, 0.05f + info_text_pos_y, 0.05f, Color::DARK_GREEN, rynx::TextRenderer::Align::Left, fontConsola);
-					}
-
 					auto player_positions = ecs.query().in<health>().gather<rynx::components::position, rynx::components::motion>();
-					
+
 					rynx::vec3f player_position;
 					rynx::vec3f player_velocity;
-					for(auto&& data_line : player_positions) { player_position += std::get<0>(data_line).value; player_velocity += std::get<1>(data_line).velocity; }
+					for (auto&& data_line : player_positions) { player_position += std::get<0>(data_line).value; player_velocity += std::get<1>(data_line).velocity; }
 
 					static rynx::floats4 success_color(0, 0, 0, 0);
 					static std::string game_result_text;
@@ -1207,6 +1054,7 @@ int main(int argc, char** argv) {
 
 						float look_ahead_mul = std::atan(0.005f * linear_speed);
 						cameraPosition = player_position + 200.0f * player_velocity * look_ahead_mul * look_ahead_mul;
+						cameraPosition->z = 300;
 					}
 
 					if (g_success_timer > 2.0f) {
@@ -1226,11 +1074,20 @@ int main(int argc, char** argv) {
 						}
 					}
 					else {
-						success_color += (rynx::floats4(0,0,0,0) - success_color) * dt * 3.0f;
+						success_color += (rynx::floats4(0, 0, 0, 0) - success_color) * dt * 3.0f;
 					}
-					
-					application.textRenderer().drawText(game_result_desc, 0.0f, 0.15f, 0.15f, success_color, rynx::TextRenderer::Align::Center, fontConsola);
-					application.textRenderer().drawText(game_result_text, 0.0f, 0.0f, 0.15f, success_color, rynx::TextRenderer::Align::Center, fontConsola);
+
+					rynx::graphics::renderable_text game_res_desc_text;
+					rynx::graphics::renderable_text game_res_result_text;
+
+					game_res_desc_text.pos({ 0.0f, 0.15f, 0.0f }).color({ success_color }).align_center().font(&fontConsola).font_size(0.15f);
+					game_res_result_text = game_res_desc_text;
+
+					game_res_desc_text.text(game_result_desc);
+					game_res_result_text.text(game_result_text).pos({ 0.0f, 0.0f, 0.0f});
+
+					application.renderer().drawText(game_res_desc_text);
+					application.renderer().drawText(game_res_result_text);
 				}
 
 				scheduler.wait_until_complete();
@@ -1239,52 +1096,10 @@ int main(int argc, char** argv) {
 			auto render_time_us = timer.time_since_last_access_us();
 			render_time.observe_value(render_time_us / 1000.0f);
 
-			auto mpos = gameInput.mouseWorldPosition();
-			{
-				rynx_profile("Main", "draw cursor");
-
-				rynx::matrix4 m;
-				m.discardSetTranslate(mpos);
-				m.scale(0.5f);
-				application.meshRenderer().drawMesh(*meshes->get("circle_empty"), m, "Empty");
-			}
-
 			{
 				rynx_profile("Main", "draw");
 
 				render.execute();
-
-				// TODO: debug visualisations should be drawn on their own fbo.
-				application.debugVis()->prepare(base_simulation.m_context);
-				{
-					// visualize collision detection structure.
-					if (conf.visualize_dynamic_collisions) {
-						std::array<rynx::vec4<float>, 5> node_colors{ rynx::vec4<float>{0, 1, 0, 0.2f}, {0, 0, 1, 0.2f}, {1, 0, 0, 0.2f}, {1, 1, 0, 0.2f}, {0, 1, 1, 0.2f} };
-						collisionDetection.get(collisionCategoryDynamic)->forEachNode([&](rynx::vec3<float> pos, float radius, int depth) {
-							rynx::matrix4 m;
-							m.discardSetTranslate(pos);
-							m.scale(radius);
-							float sign[2] = { -1.0f, +1.0f };
-							application.debugVis()->addDebugVisual(meshes->get("circle_empty"), m, node_colors[depth % node_colors.size()]);
-						});
-					}
-
-					// visualize collision detection structure.
-					if (conf.visualize_static_collisions) {
-						std::array<rynx::vec4<float>, 5> node_colors{ rynx::vec4<float>{0, 1, 0, 0.2f}, {0, 0, 1, 0.2f}, {1, 0, 0, 0.2f}, {1, 1, 0, 0.2f}, {0, 1, 1, 0.2f} };
-						collisionDetection.get(collisionCategoryStatic)->forEachNode([&](rynx::vec3<float> pos, float radius, int depth) {
-							rynx::matrix4 m;
-							m.discardSetTranslate(pos);
-							m.scale(radius);
-							float sign[2] = { -1.0f, +1.0f };
-							application.debugVis()->addDebugVisual(meshes->get("circle_empty"), m, node_colors[depth % node_colors.size()]);
-						});
-					}
-				}
-
-				{
-					application.debugVis()->execute();
-				}
 
 				{
 					application.shaders()->activate_shader("fbo_color_to_bb");
@@ -1311,7 +1126,7 @@ int main(int argc, char** argv) {
 
 		{
 			rynx_profile("Main", "Clean up dead entitites");
-			dt = std::min(0.016f, std::max(0.0001f, frame_timer_dt.time_since_last_access_ms() * 0.001f));
+			dt = std::min(0.016f, std::max(0.001f, frame_timer_dt.time_since_last_access_ms() * 0.001f));
 
 			// mark time constrained entities for removal.
 			{
@@ -1329,7 +1144,7 @@ int main(int argc, char** argv) {
 			for (auto id : ids_dead) {
 				if (ecs[id].has<rynx::components::collisions>()) {
 					auto collisions = ecs[id].get<rynx::components::collisions>();
-					collisionDetection.erase(id.value, collisions.category);
+					collisionDetection.erase(ecs, id.value, collisions.category);
 				}
 			}
 
@@ -1337,24 +1152,10 @@ int main(int argc, char** argv) {
 			ecs.erase(ids_dead);
 		}
 
-		{
-		/*
-			rynx_profile("Main", "Sleep");
-			// NOTE: Frame time can be edited during runtime for debugging reasons.
-			if (gameInput.isKeyDown(slowTime)) { sleepTime *= 1.1f; }
-			if (gameInput.isKeyDown(fastTime)) { sleepTime *= 0.9f; }
-
-			std::this_thread::sleep_for(std::chrono::milliseconds(int(sleepTime)));
-			*/
-		}
-
 		if (g_success_timer > 5.0f) {
 			construct_level();
 			g_success_timer = 0.0f;
 		}
 	}
-
-	dead_lock_detector_keepalive = false;
-	dead_lock_detector.join();
 	return 0;
 }
